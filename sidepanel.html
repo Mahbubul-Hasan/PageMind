@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CV Tailor</title>
+<link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <h1>CV Tailor</h1>
+    <button id="settingsToggle" title="Settings">⚙️</button>
+  </header>
+
+  <section id="settingsPanel" class="card hidden">
+    <label>OpenAI API key
+      <input type="password" id="apiKey" placeholder="sk-..." />
+    </label>
+    <label>Model
+      <select id="model">
+        <option value="gpt-4o-mini">gpt-4o-mini (fast, cheap)</option>
+        <option value="gpt-4o">gpt-4o</option>
+        <option value="gpt-4.1">gpt-4.1</option>
+      </select>
+    </label>
+    <p class="hint">Stored only in this browser's local extension storage. Sent directly to OpenAI, never anywhere else.</p>
+    <button id="saveSettings">Save</button>
+  </section>
+
+  <section class="card">
+    <h2>1. Your CV</h2>
+    <p id="docStatus" class="hint">No doc loaded yet.</p>
+    <button id="loadDoc">Load CV from active Google Doc tab</button>
+  </section>
+
+  <section class="card">
+    <h2>2. Job description</h2>
+    <input type="text" id="jdUrl" placeholder="Paste a job posting URL (optional)" />
+    <button id="fetchJdUrl">Fetch from URL</button>
+    <textarea id="jdText" rows="8" placeholder="...or paste the job description text here"></textarea>
+  </section>
+
+  <section class="card">
+    <button id="generate" class="primary">Generate suggested edits</button>
+    <p id="genStatus" class="hint"></p>
+  </section>
+
+  <section id="editsSection" class="card hidden">
+    <h2>3. Review edits</h2>
+    <div id="editsList"></div>
+  </section>
+
+  <div id="log" class="log"></div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
