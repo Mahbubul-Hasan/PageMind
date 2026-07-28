@@ -12,16 +12,17 @@
   </header>
 
   <section id="settingsPanel" class="card hidden">
-    <label>OpenAI API key
-      <input type="password" id="apiKey" placeholder="sk-..." />
+    <label>API key
+      <input type="password" id="apiKey" placeholder="sk-... or gsk_..." />
+    </label>
+    <label>Provider
+      <select id="provider">
+        <option value="openai">OpenAI</option>
+        <option value="groq">Groq (free tier)</option>
+      </select>
     </label>
     <label>Model
-      <select id="model">
-        <option value="gpt-4o-mini">gpt-4o-mini (fast, cheap)</option>
-        <option value="gpt-4o">gpt-4o</option>
-        <option value="gpt-4.1">gpt-4.1</option>
-        <option value="o4-mini">o4-mini</option>
-      </select>
+      <select id="model"></select>
     </label>
     <p class="hint">Stored only in this browser's local extension storage.</p>
     <button id="saveSettings">Save</button>

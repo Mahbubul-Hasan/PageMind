@@ -1,3 +1,18 @@
+const MODELS = {
+  openai: [
+    { value: "gpt-4o-mini", label: "gpt-4o-mini (fast, cheap)" },
+    { value: "gpt-4o", label: "gpt-4o" },
+    { value: "gpt-4.1", label: "gpt-4.1" },
+    { value: "o4-mini", label: "o4-mini" },
+  ],
+  groq: [
+    { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
+    { value: "llama-3.1-8b-instant", label: "Llama 3.1 8B (fast)" },
+    { value: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
+    { value: "gemma2-9b-it", label: "Gemma 2 9B" },
+  ],
+};
+
 const $ = (id) => document.getElementById(id);
 
 let state = {
@@ -19,6 +34,21 @@ function send(msg) {
   });
 }
 
+function populateModels(provider) {
+  const sel = $("model");
+  sel.innerHTML = "";
+  for (const m of MODELS[provider] || MODELS.openai) {
+    const opt = document.createElement("option");
+    opt.value = m.value;
+    opt.textContent = m.label;
+    sel.appendChild(opt);
+  }
+}
+
+$("provider").addEventListener("change", () => {
+  populateModels($("provider").value);
+});
+
 // ---------- Settings ----------
 
 $("settingsToggle").addEventListener("click", () => {
@@ -26,8 +56,11 @@ $("settingsToggle").addEventListener("click", () => {
 });
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["openaiApiKey", "openaiModel", "cvText"]);
+  const stored = await chrome.storage.local.get(["openaiApiKey", "openaiModel", "provider", "cvText"]);
   if (stored.openaiApiKey) $("apiKey").value = stored.openaiApiKey;
+  const provider = stored.provider || "openai";
+  $("provider").value = provider;
+  populateModels(provider);
   if (stored.openaiModel) $("model").value = stored.openaiModel;
   if (stored.cvText) {
     state.cvText = stored.cvText;
@@ -40,6 +73,7 @@ $("saveSettings").addEventListener("click", async () => {
   await chrome.storage.local.set({
     openaiApiKey: $("apiKey").value.trim(),
     openaiModel: $("model").value,
+    provider: $("provider").value,
   });
   log("Settings saved.");
   $("settingsPanel").classList.add("hidden");
@@ -122,7 +156,7 @@ $("generate").addEventListener("click", async () => {
 
   $("generate").disabled = true;
   $("genStatus").textContent = "Generating...";
-  log("Calling OpenAI...");
+  log(`Calling ${settings.provider || "openai"}...`);
 
   const res = await send({
     type: "GENERATE_TEXT",
@@ -132,6 +166,7 @@ $("generate").addEventListener("click", async () => {
     ],
     apiKey: settings.openaiApiKey,
     model: settings.openaiModel,
+    provider: settings.provider || "openai",
   });
 
   $("generate").disabled = false;

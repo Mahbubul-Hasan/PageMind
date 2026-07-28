@@ -1,4 +1,7 @@
-const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+const API_BASE_URLS = {
+  openai: "https://api.openai.com/v1/chat/completions",
+  groq: "https://api.groq.com/openai/v1/chat/completions",
+};
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
@@ -22,7 +25,7 @@ async function handleMessage(msg, _sender) {
         writeMode: msg.writeMode,
       });
     case "GENERATE_TEXT":
-      return generateText(msg.messages, msg.apiKey, msg.model);
+      return generateText(msg.messages, msg.apiKey, msg.model, msg.provider);
     default:
       throw new Error("Unknown message type: " + msg.type);
   }
@@ -45,18 +48,20 @@ async function sendToActiveTab(msg) {
   });
 }
 
-async function generateText(messages, apiKey, model) {
-  if (!apiKey) throw new Error("No OpenAI API key set.");
+async function generateText(messages, apiKey, model, provider = "openai") {
+  if (!apiKey) throw new Error("No API key set.");
   if (!messages || !messages.length) throw new Error("No messages provided.");
 
-  const res = await fetch(OPENAI_API_URL, {
+  const url = API_BASE_URLS[provider] || API_BASE_URLS.openai;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: model || "gpt-4o-mini",
+      model: model || (provider === "groq" ? "llama-3.3-70b-versatile" : "gpt-4o-mini"),
       messages,
       temperature: 0.4,
     }),
@@ -64,7 +69,7 @@ async function generateText(messages, apiKey, model) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`OpenAI API error (${res.status}): ${text}`);
+    throw new Error(`${provider} API error (${res.status}): ${text}`);
   }
 
   const data = await res.json();
