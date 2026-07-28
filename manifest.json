@@ -1,15 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "CV Tailor for Google Docs",
-  "version": "1.0.0",
-  "description": "Paste a job description, review AI-suggested CV edits in a side panel, and approve each one before it touches your Google Doc.",
-  "permissions": ["identity", "sidePanel", "storage", "tabs"],
+  "name": "CV Tailor",
+  "version": "2.0.0",
+  "description": "Read your CV from any page, tailor it to job descriptions, and write AI-generated content anywhere.",
+  "permissions": ["sidePanel", "storage", "tabs", "scripting"],
   "host_permissions": [
-    "https://docs.googleapis.com/*",
-    "https://docs.google.com/*",
-    "https://api.openai.com/*",
-    "https://*/*",
-    "http://*/*"
+    "https://api.openai.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -20,8 +16,11 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "oauth2": {
-    "client_id": "REPLACE_WITH_YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com",
-    "scopes": ["https://www.googleapis.com/auth/documents"]
-  }
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }

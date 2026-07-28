@@ -20,33 +20,52 @@
         <option value="gpt-4o-mini">gpt-4o-mini (fast, cheap)</option>
         <option value="gpt-4o">gpt-4o</option>
         <option value="gpt-4.1">gpt-4.1</option>
+        <option value="o4-mini">o4-mini</option>
       </select>
     </label>
-    <p class="hint">Stored only in this browser's local extension storage. Sent directly to OpenAI, never anywhere else.</p>
+    <p class="hint">Stored only in this browser's local extension storage.</p>
     <button id="saveSettings">Save</button>
   </section>
 
   <section class="card">
     <h2>1. Your CV</h2>
-    <p id="docStatus" class="hint">No doc loaded yet.</p>
-    <button id="loadDoc">Load CV from active Google Doc tab</button>
+    <p id="cvStatus" class="hint">No CV set. Navigate to your CV page and click below.</p>
+    <button id="setCv">Read CV from current page</button>
+    <button id="clearCv" class="secondary">Clear CV</button>
   </section>
 
   <section class="card">
-    <h2>2. Job description</h2>
-    <input type="text" id="jdUrl" placeholder="Paste a job posting URL (optional)" />
-    <button id="fetchJdUrl">Fetch from URL</button>
-    <textarea id="jdText" rows="8" placeholder="...or paste the job description text here"></textarea>
+    <h2>2. Page context</h2>
+    <p id="pageStatus" class="hint">Not read yet. Opens automatically when panel opens.</p>
+    <button id="refreshPage">Refresh page context</button>
+    <details>
+      <summary>Preview</summary>
+      <pre id="pagePreview" class="preview"></pre>
+    </details>
   </section>
 
   <section class="card">
-    <button id="generate" class="primary">Generate suggested edits</button>
+    <h2>3. What to write?</h2>
+    <textarea id="prompt" rows="3" placeholder='e.g. "Write a LinkedIn message introducing myself for this job"\nor "Rewrite this paragraph to highlight React experience"'></textarea>
+  </section>
+
+  <section class="card">
+    <button id="generate" class="primary">Generate</button>
     <p id="genStatus" class="hint"></p>
   </section>
 
-  <section id="editsSection" class="card hidden">
-    <h2>3. Review edits</h2>
-    <div id="editsList"></div>
+  <section id="resultSection" class="card hidden">
+    <h2>4. Review &amp; write</h2>
+    <div id="resultText" class="result-text"></div>
+    <div class="write-controls">
+      <label>Mode:
+        <select id="writeMode">
+          <option value="insert">Insert at cursor</option>
+          <option value="replace">Replace all</option>
+        </select>
+      </label>
+      <button id="writeToPage" class="primary">Write to page</button>
+    </div>
   </section>
 
   <div id="log" class="log"></div>

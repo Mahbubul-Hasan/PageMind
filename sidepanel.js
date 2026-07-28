@@ -1,10 +1,10 @@
 const $ = (id) => document.getElementById(id);
 
 let state = {
-  docId: null,
-  docTitle: "",
   cvText: "",
-  edits: []
+  pageText: "",
+  pageSource: "",
+  generatedText: "",
 };
 
 function log(msg) {
@@ -26,198 +26,163 @@ $("settingsToggle").addEventListener("click", () => {
 });
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["openaiApiKey", "openaiModel"]);
+  const stored = await chrome.storage.local.get(["openaiApiKey", "openaiModel", "cvText"]);
   if (stored.openaiApiKey) $("apiKey").value = stored.openaiApiKey;
   if (stored.openaiModel) $("model").value = stored.openaiModel;
+  if (stored.cvText) {
+    state.cvText = stored.cvText;
+    $("cvStatus").textContent = `CV loaded (${stored.cvText.length} characters).`;
+  }
   if (!stored.openaiApiKey) $("settingsPanel").classList.remove("hidden");
 }
 
 $("saveSettings").addEventListener("click", async () => {
   await chrome.storage.local.set({
     openaiApiKey: $("apiKey").value.trim(),
-    openaiModel: $("model").value
+    openaiModel: $("model").value,
   });
   log("Settings saved.");
   $("settingsPanel").classList.add("hidden");
 });
 
-// ---------- Load CV from active Google Doc ----------
+// ---------- CV ----------
 
-$("loadDoc").addEventListener("click", async () => {
-  $("docStatus").textContent = "Loading...";
-  const idRes = await send({ type: "GET_ACTIVE_DOC_ID" });
-  if (!idRes.ok) {
-    $("docStatus").textContent = idRes.error;
-    log("Error: " + idRes.error);
-    return;
-  }
-  state.docId = idRes.docId;
+$("setCv").addEventListener("click", async () => {
+  $("setCv").disabled = true;
+  $("cvStatus").textContent = "Reading page...";
+  log("Reading current page as CV...");
 
-  const docRes = await send({ type: "FETCH_DOC", docId: state.docId });
-  if (!docRes.ok) {
-    $("docStatus").textContent = docRes.error;
-    log("Error: " + docRes.error);
-    return;
-  }
-  state.cvText = docRes.plainText;
-  state.docTitle = docRes.title;
-  $("docStatus").textContent = `Loaded "${docRes.title}" (${docRes.plainText.length} characters).`;
-  log(`Loaded doc: ${docRes.title}`);
-});
-
-// ---------- Job description ----------
-
-$("fetchJdUrl").addEventListener("click", async () => {
-  const url = $("jdUrl").value.trim();
-  if (!url) return;
-  log("Fetching job description from URL...");
-  const res = await send({ type: "FETCH_JD_FROM_URL", url });
+  const res = await send({ type: "READ_PAGE", mode: "page" });
   if (!res.ok) {
-    log("Error fetching JD: " + res.error);
+    $("cvStatus").textContent = "Error: " + res.error;
+    log("Error: " + res.error);
+    $("setCv").disabled = false;
     return;
   }
-  $("jdText").value = res.jdText;
-  log("Job description fetched from URL.");
+
+  state.cvText = res.text;
+  await chrome.storage.local.set({ cvText: res.text });
+  $("cvStatus").textContent = `CV loaded from page (${res.text.length} characters).`;
+  log(`CV set from page (${res.text.length} chars).`);
+  $("setCv").disabled = false;
 });
 
-// ---------- Generate edits ----------
+$("clearCv").addEventListener("click", async () => {
+  state.cvText = "";
+  await chrome.storage.local.remove("cvText");
+  $("cvStatus").textContent = "No CV set.";
+  log("CV cleared.");
+});
+
+// ---------- Page context ----------
+
+async function readPageContext() {
+  const res = await send({ type: "READ_PAGE", mode: "auto" });
+  if (!res.ok) {
+    $("pageStatus").textContent = "Error: " + res.error;
+    return;
+  }
+  state.pageText = res.text;
+  state.pageSource = res.source;
+  $("pageStatus").textContent = `Read from ${res.source} (${res.text.length} characters).`;
+  $("pagePreview").textContent = res.text.slice(0, 2000);
+}
+
+$("refreshPage").addEventListener("click", async () => {
+  $("pageStatus").textContent = "Reading...";
+  await readPageContext();
+  log("Page context refreshed.");
+});
+
+// ---------- Generate ----------
 
 $("generate").addEventListener("click", async () => {
-  const jdText = $("jdText").value.trim();
-  if (!state.cvText) {
-    $("genStatus").textContent = "Load your CV first (step 1).";
-    return;
-  }
-  if (!jdText) {
-    $("genStatus").textContent = "Paste or fetch a job description first (step 2).";
-    return;
-  }
-
+  const promptText = $("prompt").value.trim();
   const settings = await chrome.storage.local.get(["openaiApiKey", "openaiModel"]);
+
   if (!settings.openaiApiKey) {
     $("genStatus").textContent = "Add your OpenAI API key in settings (⚙️).";
     $("settingsPanel").classList.remove("hidden");
     return;
   }
+  if (!promptText) {
+    $("genStatus").textContent = "Enter what you want to write.";
+    return;
+  }
+
+  const systemParts = [];
+  systemParts.push("You are an expert writing assistant. The user has a CV and is viewing a target page. Use the CV to accurately reflect the user's background and expertise. Use the page context to understand the target audience or requirements.");
+
+  if (state.cvText) {
+    systemParts.push(`\n\nUSER'S CV:\n${state.cvText}`);
+  }
+  if (state.pageText) {
+    systemParts.push(`\n\nPAGE CONTEXT:\n${state.pageText}`);
+  }
 
   $("generate").disabled = true;
-  $("genStatus").textContent = "Generating suggestions...";
-  log("Calling OpenAI for edit suggestions...");
+  $("genStatus").textContent = "Generating...";
+  log("Calling OpenAI...");
 
   const res = await send({
-    type: "GENERATE_EDITS",
-    cvText: state.cvText,
-    jdText,
+    type: "GENERATE_TEXT",
+    messages: [
+      { role: "system", content: systemParts.join("") },
+      { role: "user", content: promptText },
+    ],
     apiKey: settings.openaiApiKey,
-    model: settings.openaiModel
+    model: settings.openaiModel,
   });
 
   $("generate").disabled = false;
 
   if (!res.ok) {
     $("genStatus").textContent = "Error: " + res.error;
-    log("Error generating edits: " + res.error);
+    log("Error generating: " + res.error);
     return;
   }
 
-  state.edits = res.edits.map((e, i) => ({ ...e, id: i, status: "pending" }));
-  $("genStatus").textContent = `${state.edits.length} suggested edit(s)${res.dropped ? ` (${res.dropped} dropped — text didn't match verbatim)` : ""}.`;
-  log(`Received ${state.edits.length} verified edit(s).`);
-  renderEdits();
+  state.generatedText = res.text;
+  $("resultText").textContent = res.text;
+  $("genStatus").textContent = "Generated.";
+  $("resultSection").classList.remove("hidden");
+  $("writeToPage").disabled = false;
+  log("Text generated.");
 });
 
-function renderEdits() {
-  const section = $("editsSection");
-  const list = $("editsList");
-  list.innerHTML = "";
+// ---------- Write to page ----------
 
-  if (state.edits.length === 0) {
-    section.classList.add("hidden");
-    return;
-  }
-  section.classList.remove("hidden");
+$("writeToPage").addEventListener("click", async () => {
+  if (!state.generatedText) return;
 
-  for (const edit of state.edits) {
-    const card = document.createElement("div");
-    card.className = "edit-card" + (edit.status !== "pending" ? " applied" : "");
-    card.dataset.id = edit.id;
+  $("writeToPage").disabled = true;
+  const writeMode = $("writeMode").value;
+  log(`Writing to page (${writeMode})...`);
 
-    const reason = document.createElement("div");
-    reason.className = "reason";
-    reason.textContent = edit.reason || "";
-    card.appendChild(reason);
-
-    const diff = document.createElement("div");
-    diff.className = "diff";
-
-    const findEl = document.createElement("span");
-    findEl.className = "find";
-    findEl.textContent = edit.find;
-    diff.appendChild(findEl);
-
-    const replaceEl = document.createElement("span");
-    replaceEl.className = "replace";
-    replaceEl.textContent = edit.replace;
-    diff.appendChild(replaceEl);
-
-    card.appendChild(diff);
-
-    if (edit.status === "pending") {
-      const actions = document.createElement("div");
-      actions.className = "edit-actions";
-
-      const acceptBtn = document.createElement("button");
-      acceptBtn.className = "accept";
-      acceptBtn.textContent = "Accept";
-      acceptBtn.addEventListener("click", () => applyEdit(edit.id));
-
-      const rejectBtn = document.createElement("button");
-      rejectBtn.className = "reject";
-      rejectBtn.textContent = "Reject";
-      rejectBtn.addEventListener("click", () => rejectEdit(edit.id));
-
-      actions.appendChild(acceptBtn);
-      actions.appendChild(rejectBtn);
-      card.appendChild(actions);
-    } else {
-      const statusEl = document.createElement("div");
-      statusEl.className = "hint";
-      statusEl.textContent = edit.status === "applied" ? "✓ Applied" : "✗ Rejected";
-      card.appendChild(statusEl);
-    }
-
-    list.appendChild(card);
-  }
-}
-
-async function applyEdit(id) {
-  const edit = state.edits.find((e) => e.id === id);
-  if (!edit || !state.docId) return;
-
-  log(`Applying edit #${id}...`);
   const res = await send({
-    type: "APPLY_EDIT",
-    docId: state.docId,
-    find: edit.find,
-    replace: edit.replace,
-    matchCase: true
+    type: "WRITE_TO_PAGE",
+    text: state.generatedText,
+    writeMode,
   });
 
   if (!res.ok) {
-    log(`Error applying edit #${id}: ` + res.error);
+    log("Error writing: " + res.error);
+    $("writeToPage").disabled = false;
     return;
   }
 
-  edit.status = "applied";
-  log(`Edit #${id} applied (${res.occurrences} occurrence(s) changed).`);
-  renderEdits();
-}
+  log("Written to page successfully.");
+});
 
-function rejectEdit(id) {
-  const edit = state.edits.find((e) => e.id === id);
-  if (!edit) return;
-  edit.status = "rejected";
-  renderEdits();
-}
+// ---------- Init ----------
 
 loadSettings();
+
+// Auto-read page context on open
+async function initPageRead() {
+  $("pageStatus").textContent = "Reading page...";
+  await readPageContext();
+  log("Page auto-read on open.");
+}
+
+initPageRead();

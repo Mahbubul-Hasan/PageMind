@@ -53,7 +53,7 @@ input[type="text"], input[type="password"], textarea, select {
   font-family: inherit;
 }
 
-textarea { resize: vertical; margin-top: 8px; }
+textarea { resize: vertical; }
 
 button {
   background: #efeff1;
@@ -79,25 +79,55 @@ button.primary {
 button.primary:hover { background: #1f5adf; }
 button.primary:disabled { background: #a9c1f5; cursor: default; }
 
-.hint { font-size: 11px; color: #888; margin: 4px 0; }
-
-.edit-card {
-  border: 1px solid #e2e2e4;
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 10px;
+button.secondary {
+  background: #efeff1;
+  color: #555;
+  border-color: #d5d5d8;
+  margin-left: 4px;
 }
 
-.edit-card .reason { font-size: 11px; color: #777; margin-bottom: 6px; }
-.edit-card .diff { font-size: 12px; margin-bottom: 8px; }
-.edit-card .find { color: #b3261e; text-decoration: line-through; display: block; margin-bottom: 4px; white-space: pre-wrap; }
-.edit-card .replace { color: #1e7a34; display: block; white-space: pre-wrap; }
+.hint { font-size: 11px; color: #888; margin: 4px 0; }
 
-.edit-actions { display: flex; gap: 6px; }
-.edit-actions button.accept { background: #1e7a34; color: #fff; border-color: #1e7a34; }
-.edit-actions button.reject { background: #b3261e; color: #fff; border-color: #b3261e; }
-.edit-card.applied { opacity: 0.5; }
-.edit-card.applied .edit-actions { display: none; }
+.preview {
+  font-size: 11px;
+  color: #666;
+  white-space: pre-wrap;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #f7f7f8;
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+
+.result-text {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #f0f5ff;
+  border: 1px solid #d0d9f0;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.write-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.write-controls label {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.write-controls button {
+  margin-top: 0;
+  flex: 1;
+}
 
 .log {
   font-size: 11px;
@@ -105,4 +135,12 @@ button.primary:disabled { background: #a9c1f5; cursor: default; }
   white-space: pre-wrap;
   max-height: 100px;
   overflow-y: auto;
+  margin-top: 8px;
+}
+
+details summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
 }
