@@ -1,8 +1,28 @@
-const tabSessions = new Map();
+const SESSION_PREFIX = "session_";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
+
+// --- Session helpers (chrome.storage.session) ---
+
+function sessionKey(tabId) {
+  return SESSION_PREFIX + tabId;
+}
+
+async function getSession(tabId) {
+  const key = sessionKey(tabId);
+  const data = await chrome.storage.session.get(key);
+  return data[key] || null;
+}
+
+async function setSession(tabId, session) {
+  await chrome.storage.session.set({ [sessionKey(tabId)]: session });
+}
+
+async function deleteSession(tabId) {
+  await chrome.storage.session.remove(sessionKey(tabId));
+}
 
 // --- Detect tab switches & URL changes ---
 
@@ -11,7 +31,6 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  // URL changed in the active tab (same tab, new page)
   if (changeInfo.url) {
     chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
       if (tabs[0]?.id === tabId) notifySidePanel(tabId, true);
@@ -43,12 +62,12 @@ async function handleMessage(msg) {
     case "BACKEND_FETCH":
       return backendFetch(msg.url, msg.options);
     case "GET_SESSION":
-      return { session: tabSessions.get(msg.tabId) || null };
+      return { session: await getSession(msg.tabId) };
     case "SAVE_SESSION":
-      tabSessions.set(msg.tabId, msg.session);
+      await setSession(msg.tabId, msg.session);
       return { ok: true };
     case "DELETE_SESSION":
-      tabSessions.delete(msg.tabId);
+      await deleteSession(msg.tabId);
       return { ok: true };
     case "GET_ACTIVE_TAB": {
       const tab = await getActiveTab();
@@ -62,10 +81,7 @@ async function handleMessage(msg) {
 async function backendFetch(url, options = {}) {
   const res = await fetch(url, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers: { "Content-Type": "application/json", ...options.headers },
   });
   if (!res.ok) {
     const text = await res.text();

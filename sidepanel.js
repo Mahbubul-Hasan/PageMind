@@ -4,6 +4,9 @@ let pageText = "";
 let currentTabId = null;
 let ready = false;
 
+const MAX_CONTEXT_CHARS = 96000;
+const MAX_HISTORY_MSGS = 20;
+
 const BACKEND_STORAGE_KEY = "pagmind_backend";
 let backendUrl = "";
 let useBackend = false;
@@ -51,11 +54,7 @@ async function saveSession() {
   await send({
     type: "SAVE_SESSION",
     tabId: currentTabId,
-    session: {
-      pageText,
-      messages: serializeMessages(),
-      indicator: getIndicatorState(),
-    },
+    session: { pageText, messages: serializeMessages(), indicator: getIndicatorState() },
   });
 }
 
@@ -94,15 +93,40 @@ async function readAndSave() {
   await saveSession();
 }
 
+// --- Build AI context with conversation memory ---
+
+function buildChatMessages(userText, prevMessages) {
+  const systemContent = `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText || "(none)"}`;
+
+  const history = (prevMessages || [])
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .slice(-MAX_HISTORY_MSGS * 2);
+
+  const budget = MAX_CONTEXT_CHARS - systemContent.length - userText.length - 2000;
+  const trimmed = [];
+  let used = 0;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const next = used + history[i].content.length;
+    if (next > budget && trimmed.length > 0) break;
+    trimmed.unshift(history[i]);
+    used += history[i].content.length;
+  }
+
+  return [
+    { role: "system", content: systemContent },
+    ...trimmed,
+    { role: "user", content: userText },
+  ];
+}
+
 // --- Tab switch handler ---
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type !== "tabChanged") return true;
   sendResponse({ ok: true });
-
   if (!ready) return true;
 
-  // URL changed within the same tab → clear session, read fresh
   if (msg.urlChanged && msg.tabId === currentTabId) {
     send({ type: "DELETE_SESSION", tabId: currentTabId });
     $("messages").innerHTML = "";
@@ -112,7 +136,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // Tab ID changed → save old, load new
   if (msg.tabId === currentTabId) return true;
 
   saveSession().then(() => {
@@ -122,7 +145,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (!found) readAndSave();
     });
   });
-
   return true;
 });
 
@@ -162,10 +184,7 @@ $("saveSettings").addEventListener("click", async () => {
     baseUrl: $("baseUrl").value.trim(),
     model: $("model").value.trim(),
   });
-  const cfg = {
-    url: $("backendUrl").value.trim(),
-    enabled: $("useBackend").checked,
-  };
+  const cfg = { url: $("backendUrl").value.trim(), enabled: $("useBackend").checked };
   await chrome.storage.local.set({ [BACKEND_STORAGE_KEY]: cfg });
   backendUrl = cfg.url;
   useBackend = cfg.enabled;
@@ -197,9 +216,7 @@ async function readPage() {
   return res.text;
 }
 
-$("refreshBtn").addEventListener("click", async () => {
-  await readAndSave();
-});
+$("refreshBtn").addEventListener("click", readAndSave);
 
 // --- Messages ---
 
@@ -251,7 +268,7 @@ function showLoading() {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-// --- Send ---
+// --- Send with conversation memory ---
 
 async function handleSend() {
   const text = $("input").value.trim();
@@ -266,24 +283,29 @@ async function handleSend() {
     }
   }
 
-  $("input").value = "";
-  $("input").style.height = "auto";
-  $("sendBtn").disabled = true;
-
-  addMessage("user", text);
+  // Get previous messages for context BEFORE updating DOM
+  const res = await send({ type: "GET_SESSION", tabId: currentTabId });
+  const prevMessages = (res.session?.messages || []);
 
   if (!pageText) {
     addMessage("system", "Reading page...");
     await readPage();
   }
 
+  $("input").value = "";
+  $("input").style.height = "auto";
+  $("sendBtn").disabled = true;
+
+  addMessage("user", text);
   showLoading();
+
   if (!pageText) pageText = "";
+  const context = buildChatMessages(text, prevMessages);
 
   if (useBackend) {
-    await handleSendBackend(text);
+    await handleSendBackend(context);
   } else {
-    await handleSendDirect(text);
+    await handleSendDirect(context);
   }
 
   removeLoading();
@@ -291,14 +313,11 @@ async function handleSend() {
   await saveSession();
 }
 
-async function handleSendDirect(text) {
+async function handleSendDirect(context) {
   const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
   const res = await send({
     type: "ASK_AI",
-    messages: [
-      { role: "system", content: `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText}` },
-      { role: "user", content: text },
-    ],
+    messages: context,
     apiKey: s.apiKey,
     baseUrl: s.baseUrl,
     model: s.model,
@@ -307,16 +326,11 @@ async function handleSendDirect(text) {
   else addMessage("assistant", res.text, res.text);
 }
 
-async function handleSendBackend(text) {
+async function handleSendBackend(context) {
   try {
     const data = await backendFetch("/proxy/chat", {
       method: "POST",
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText}` },
-          { role: "user", content: text },
-        ],
-      }),
+      body: JSON.stringify({ messages: context }),
     });
     addMessage("assistant", data.text, data.text);
   } catch (e) {
@@ -343,9 +357,7 @@ async function init() {
   updateTabIdDisplay();
 
   const found = await loadSession();
-  if (!found) {
-    await readAndSave();
-  }
+  if (!found) await readAndSave();
   ready = true;
 }
 
