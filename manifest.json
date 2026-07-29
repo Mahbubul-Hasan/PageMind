@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxMlidiQ1/+IGMiA3Q6DIJncDwPeMAfkIr9f9FrOJaWo8x/GAusauWWRQn3aGv6qe3+erH7ZmSaZ9dRkGW0Rm+ssnU4k3EA9lJD0LSeFRr07jAJ8ymgB0J65Qx7Lusf3/CGbVeD1s/FCHOmeVHsPxotdJhT0aqL6NAODwdrykW1XLuov9bbgFXNYqaVzOyoy+pbUhZUm07WIGcJIptsgdI30a4svTquFNqdLea+q288kCx/ebl9IpuHCaR4kZhBk22BH/nqlUaCDbN6ITHH4sDHNsfkTTU8Mnb+iU6rNrvRl3y+rAtxw4gkwfdXbnMdcnfZom+675xXGQGsmPkMLI+wIDAQAB",
   "name": "PageMind",
   "version": "1.0.0",
   "description": "Read, chat, and write on any page.",
