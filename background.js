@@ -1,21 +1,26 @@
+const tabSessions = new Map();
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
-// --- Detect page changes ---
+// --- Detect tab switches & URL changes ---
 
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.url && tab.active) {
-    notifySidePanel();
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  notifySidePanel(tabId, false);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // URL changed in the active tab (same tab, new page)
+  if (changeInfo.url) {
+    chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+      if (tabs[0]?.id === tabId) notifySidePanel(tabId, true);
+    });
   }
 });
 
-chrome.tabs.onActivated.addListener(() => {
-  notifySidePanel();
-});
-
-function notifySidePanel() {
-  chrome.runtime.sendMessage({ type: "PAGE_CHANGED" }).catch(() => {});
+function notifySidePanel(tabId, urlChanged) {
+  chrome.runtime.sendMessage({ type: "tabChanged", tabId, urlChanged }).catch(() => {});
 }
 
 // --- Message handling ---
@@ -37,6 +42,18 @@ async function handleMessage(msg) {
       return sendToActiveTab({ type: "WRITE_TO_PAGE", text: msg.text });
     case "BACKEND_FETCH":
       return backendFetch(msg.url, msg.options);
+    case "GET_SESSION":
+      return { session: tabSessions.get(msg.tabId) || null };
+    case "SAVE_SESSION":
+      tabSessions.set(msg.tabId, msg.session);
+      return { ok: true };
+    case "DELETE_SESSION":
+      tabSessions.delete(msg.tabId);
+      return { ok: true };
+    case "GET_ACTIVE_TAB": {
+      const tab = await getActiveTab();
+      return { tabId: tab.id };
+    }
     default:
       throw new Error("Unknown type: " + msg.type);
   }
@@ -50,11 +67,11 @@ async function backendFetch(url, options = {}) {
       ...options.headers,
     },
   });
-  const data = await res.json();
   if (!res.ok) {
-    throw new Error(`Backend error (${res.status}): ${JSON.stringify(data)}`);
+    const text = await res.text();
+    throw new Error(`Backend error (${res.status}): ${text}`);
   }
-  return data;
+  return res.json();
 }
 
 async function getActiveTab() {
@@ -65,18 +82,15 @@ async function getActiveTab() {
 
 async function readActivePage() {
   const tab = await getActiveTab();
-
   try {
     const msg = await sendToTab(tab.id, { type: "READ_PAGE" });
     return { text: msg.text };
   } catch (_) {}
-
   const result = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: ["content.js"],
     world: "ISOLATED",
   });
-
   const text = result?.[0]?.result;
   if (!text && text !== "") throw new Error("Could not read page content.");
   return { text };
@@ -102,15 +116,8 @@ async function askAI(messages, apiKey, baseUrl, model) {
   const url = baseUrl || "https://api.openai.com/v1/chat/completions";
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model || "gpt-4o-mini",
-      messages,
-      temperature: 0.3,
-    }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: model || "gpt-4o-mini", messages, temperature: 0.3 }),
   });
   if (!res.ok) {
     const t = await res.text();

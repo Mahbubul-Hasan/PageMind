@@ -1,6 +1,8 @@
 const $ = (id) => document.getElementById(id);
 
 let pageText = "";
+let currentTabId = null;
+let ready = false;
 
 const BACKEND_STORAGE_KEY = "pagmind_backend";
 let backendUrl = "";
@@ -8,27 +10,121 @@ let useBackend = false;
 
 function send(msg) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, (r) => resolve(r));
+    chrome.runtime.sendMessage(msg, (r) => {
+      if (chrome.runtime.lastError) resolve({ ok: false });
+      else resolve(r);
+    });
   });
 }
 
-// --- Listen for page changes ---
+// --- Session ---
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === "PAGE_CHANGED") {
-    resetChat();
-    sendResponse({ ok: true });
+function serializeMessages() {
+  return Array.from($("messages").children)
+    .filter((el) => !el.classList.contains("loading") && !el.classList.contains("welcome"))
+    .map((el) => ({
+      role: el.classList.contains("user") ? "user"
+        : el.classList.contains("assistant") ? "assistant"
+        : el.classList.contains("error") ? "error" : "system",
+      content: el.textContent,
+    }));
+}
+
+function getIndicatorState() {
+  return {
+    text: $("pageIndicator").textContent,
+    dotClass: $("pageDot").className,
+  };
+}
+
+function applyIndicatorState(state) {
+  $("pageIndicator").textContent = state.text;
+  $("pageDot").className = state.dotClass;
+}
+
+function updateTabIdDisplay() {
+  $("tabIdDisplay").textContent = currentTabId ? `tab:${currentTabId}` : "";
+}
+
+async function saveSession() {
+  if (!currentTabId) return;
+  await send({
+    type: "SAVE_SESSION",
+    tabId: currentTabId,
+    session: {
+      pageText,
+      messages: serializeMessages(),
+      indicator: getIndicatorState(),
+    },
+  });
+}
+
+function renderMessages(messages) {
+  $("messages").innerHTML = "";
+  const wel = document.createElement("div");
+  wel.className = "welcome";
+  wel.innerHTML = "<p>Open this panel on any page<br/>and ask me anything about it.</p>";
+  $("messages").appendChild(wel);
+  for (const m of messages || []) {
+    const el = document.createElement("div");
+    el.className = `message ${m.role}`;
+    el.textContent = m.content;
+    $("messages").appendChild(el);
+  }
+}
+
+async function loadSession() {
+  if (!currentTabId) return false;
+  const res = await send({ type: "GET_SESSION", tabId: currentTabId });
+  const s = res.session;
+  if (!s) return false;
+  pageText = s.pageText || "";
+  renderMessages(s.messages);
+  if (s.indicator) applyIndicatorState(s.indicator);
+  if ($("messages").children.length > 1) {
+    $("messages").scrollTop = $("messages").scrollHeight;
   }
   return true;
-});
-
-function resetChat() {
-  pageText = "";
-  $("messages").innerHTML = "";
-  $("pageDot").className = "page-dot";
-  $("pageIndicator").textContent = "New page detected, reading...";
-  readPage();
 }
+
+async function readAndSave() {
+  $("pageDot").className = "page-dot";
+  $("pageIndicator").textContent = "Reading...";
+  await readPage();
+  await saveSession();
+}
+
+// --- Tab switch handler ---
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type !== "tabChanged") return true;
+  sendResponse({ ok: true });
+
+  if (!ready) return true;
+
+  // URL changed within the same tab → clear session, read fresh
+  if (msg.urlChanged && msg.tabId === currentTabId) {
+    send({ type: "DELETE_SESSION", tabId: currentTabId });
+    $("messages").innerHTML = "";
+    pageText = "";
+    updateTabIdDisplay();
+    readAndSave();
+    return true;
+  }
+
+  // Tab ID changed → save old, load new
+  if (msg.tabId === currentTabId) return true;
+
+  saveSession().then(() => {
+    currentTabId = msg.tabId;
+    updateTabIdDisplay();
+    loadSession().then((found) => {
+      if (!found) readAndSave();
+    });
+  });
+
+  return true;
+});
 
 // --- Settings ---
 
@@ -47,20 +143,11 @@ $("closeSettings").addEventListener("click", closeSettings);
 $("settingsOverlay").addEventListener("click", closeSettings);
 
 async function loadSettings() {
-  const defaults = {
-    apiKey: "",
-    baseUrl: "https://api.openai.com/v1/chat/completions",
-    model: "gpt-4o-mini",
-  };
   const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
-  const apiKey = s.apiKey || defaults.apiKey;
-  const baseUrl = s.baseUrl || defaults.baseUrl;
-  const model = s.model || defaults.model;
-  $("apiKey").value = apiKey;
-  $("baseUrl").value = baseUrl;
-  $("model").value = model;
+  $("apiKey").value = s.apiKey || "";
+  $("baseUrl").value = s.baseUrl || "https://api.openai.com/v1/chat/completions";
+  $("model").value = s.model || "gpt-4o-mini";
 
-  // Backend settings
   const bk = await chrome.storage.local.get([BACKEND_STORAGE_KEY]);
   const cfg = bk[BACKEND_STORAGE_KEY] || { url: "", enabled: false };
   $("backendUrl").value = cfg.url;
@@ -75,7 +162,6 @@ $("saveSettings").addEventListener("click", async () => {
     baseUrl: $("baseUrl").value.trim(),
     model: $("model").value.trim(),
   });
-
   const cfg = {
     url: $("backendUrl").value.trim(),
     enabled: $("useBackend").checked,
@@ -83,7 +169,6 @@ $("saveSettings").addEventListener("click", async () => {
   await chrome.storage.local.set({ [BACKEND_STORAGE_KEY]: cfg });
   backendUrl = cfg.url;
   useBackend = cfg.enabled;
-
   $("settingsStatus").textContent = "Saved.";
   closeSettings();
 });
@@ -113,9 +198,7 @@ async function readPage() {
 }
 
 $("refreshBtn").addEventListener("click", async () => {
-  $("pageDot").className = "page-dot";
-  $("pageIndicator").textContent = "Reading...";
-  await readPage();
+  await readAndSave();
 });
 
 // --- Messages ---
@@ -125,6 +208,9 @@ function isNearBottom() {
 }
 
 function addMessage(role, content, writeText) {
+  const wel = $("messages").querySelector(".welcome");
+  if (wel) wel.remove();
+
   const el = document.createElement("div");
   el.className = `message ${role}`;
   el.textContent = content;
@@ -149,7 +235,6 @@ function addMessage(role, content, writeText) {
     });
     el.appendChild(btn);
   }
-
   if (snap) $("messages").scrollTop = $("messages").scrollHeight;
 }
 
@@ -193,7 +278,6 @@ async function handleSend() {
   }
 
   showLoading();
-
   if (!pageText) pageText = "";
 
   if (useBackend) {
@@ -204,6 +288,7 @@ async function handleSend() {
 
   removeLoading();
   $("sendBtn").disabled = false;
+  await saveSession();
 }
 
 async function handleSendDirect(text) {
@@ -218,11 +303,8 @@ async function handleSendDirect(text) {
     baseUrl: s.baseUrl,
     model: s.model,
   });
-  if (!res.ok) {
-    addMessage("error", res.error);
-  } else {
-    addMessage("assistant", res.text, res.text);
-  }
+  if (!res.ok) addMessage("error", res.error);
+  else addMessage("assistant", res.text, res.text);
 }
 
 async function handleSendBackend(text) {
@@ -243,14 +325,9 @@ async function handleSendBackend(text) {
 }
 
 $("sendBtn").addEventListener("click", handleSend);
-
 $("input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    handleSend();
-  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
 });
-
 $("input").addEventListener("input", () => {
   $("sendBtn").disabled = !$("input").value.trim();
   $("input").style.height = "auto";
@@ -261,8 +338,15 @@ $("input").addEventListener("input", () => {
 
 async function init() {
   await loadSettings();
-  $("pageIndicator").textContent = "Reading...";
-  await readPage();
+  const tab = await send({ type: "GET_ACTIVE_TAB" });
+  currentTabId = tab.tabId;
+  updateTabIdDisplay();
+
+  const found = await loadSession();
+  if (!found) {
+    await readAndSave();
+  }
+  ready = true;
 }
 
 init();
