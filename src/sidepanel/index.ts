@@ -32,6 +32,7 @@ const backendUrlEl = $('backendUrl') as HTMLInputElement;
 const useBackendEl = $('useBackend') as HTMLInputElement;
 const profileNameEl = $('profileName') as HTMLInputElement;
 const profileStatsEl = $('profileStats') as HTMLElement;
+const suggestionsEl = $('suggestions') as HTMLElement;
 
 // --- Messaging ---
 
@@ -171,6 +172,7 @@ async function handleSendBackend(context: ChatMessage[]): Promise<void> {
 async function handleSend(): Promise<void> {
   const text = inputEl.value.trim();
   if (!text) return;
+  suggestionsEl.classList.add('hidden');
 
   if (!isBackendEnabled()) {
     const s = await chrome.storage.local.get(['apiKey']);
@@ -227,6 +229,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {
     messagesEl.innerHTML = '';
     setPageText('');
     updateTabIdDisplay();
+    suggestionsEl.classList.remove('hidden');
     readAndSave();
     return;
   }
@@ -254,6 +257,13 @@ inputEl.addEventListener('input', () => {
   sendBtn.disabled = !inputEl.value.trim();
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+suggestionsEl.addEventListener('click', (e) => {
+  const chip = (e.target as HTMLElement).closest('.chip') as HTMLButtonElement | null;
+  if (!chip) return;
+  inputEl.value = chip.dataset.prompt ?? '';
+  handleSend();
 });
 
 openSettingsBtn.addEventListener('click', () =>
