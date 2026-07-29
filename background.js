@@ -1,59 +1,105 @@
-const API_BASE_URLS = {
-  openai: "https://api.openai.com/v1/chat/completions",
-  groq: "https://api.groq.com/openai/v1/chat/completions",
-};
-
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  handleMessage(msg, sender)
-    .then((result) => sendResponse({ ok: true, ...result }))
-    .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
+// --- Detect page changes ---
+
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.url && tab.active) {
+    notifySidePanel();
+  }
+});
+
+chrome.tabs.onActivated.addListener(() => {
+  notifySidePanel();
+});
+
+function notifySidePanel() {
+  chrome.runtime.sendMessage({ type: "PAGE_CHANGED" }).catch(() => {});
+}
+
+// --- Message handling ---
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  handleMessage(msg)
+    .then((r) => sendResponse({ ok: true, ...r }))
+    .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }));
   return true;
 });
 
-async function handleMessage(msg, _sender) {
+async function handleMessage(msg) {
   switch (msg.type) {
     case "READ_PAGE":
-      return sendToActiveTab({ type: "READ_PAGE", mode: msg.mode });
+      return readActivePage();
+    case "ASK_AI":
+      return askAI(msg.messages, msg.apiKey, msg.baseUrl, msg.model);
     case "WRITE_TO_PAGE":
-      return sendToActiveTab({
-        type: "WRITE_TO_PAGE",
-        text: msg.text,
-        writeMode: msg.writeMode,
-      });
-    case "GENERATE_TEXT":
-      return generateText(msg.messages, msg.apiKey, msg.model, msg.provider);
+      return sendToActiveTab({ type: "WRITE_TO_PAGE", text: msg.text });
+    case "BACKEND_FETCH":
+      return backendFetch(msg.url, msg.options);
     default:
-      throw new Error("Unknown message type: " + msg.type);
+      throw new Error("Unknown type: " + msg.type);
   }
 }
 
-async function sendToActiveTab(msg) {
+async function backendFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`Backend error (${res.status}): ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab found.");
+  return tab;
+}
 
+async function readActivePage() {
+  const tab = await getActiveTab();
+
+  try {
+    const msg = await sendToTab(tab.id, { type: "READ_PAGE" });
+    return { text: msg.text };
+  } catch (_) {}
+
+  const result = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["content.js"],
+    world: "ISOLATED",
+  });
+
+  const text = result?.[0]?.result;
+  if (!text && text !== "") throw new Error("Could not read page content.");
+  return { text };
+}
+
+async function sendToActiveTab(msg) {
+  const tab = await getActiveTab();
+  return sendToTab(tab.id, msg);
+}
+
+function sendToTab(tabId, msg) {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tab.id, msg, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (!response?.ok) {
-        reject(new Error(response?.error || "Content script did not respond"));
-      } else {
-        resolve(response);
-      }
+    chrome.tabs.sendMessage(tabId, msg, (r) => {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else if (!r?.ok) reject(new Error(r?.error || "No response"));
+      else resolve(r);
     });
   });
 }
 
-async function generateText(messages, apiKey, model, provider = "openai") {
+async function askAI(messages, apiKey, baseUrl, model) {
   if (!apiKey) throw new Error("No API key set.");
-  if (!messages || !messages.length) throw new Error("No messages provided.");
-
-  const url = API_BASE_URLS[provider] || API_BASE_URLS.openai;
-
+  const url = baseUrl || "https://api.openai.com/v1/chat/completions";
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -61,19 +107,15 @@ async function generateText(messages, apiKey, model, provider = "openai") {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: model || (provider === "groq" ? "llama-3.3-70b-versatile" : "gpt-4o-mini"),
+      model: model || "gpt-4o-mini",
       messages,
-      temperature: 0.4,
+      temperature: 0.3,
     }),
   });
-
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${provider} API error (${res.status}): ${text}`);
+    const t = await res.text();
+    throw new Error(`API error (${res.status}): ${t}`);
   }
-
   const data = await res.json();
-  const content = data.choices?.[0]?.message?.content || "";
-
-  return { text: content };
+  return { text: data.choices?.[0]?.message?.content || "" };
 }

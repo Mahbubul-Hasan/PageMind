@@ -1,223 +1,268 @@
-const MODELS = {
-  openai: [
-    { value: "gpt-4o-mini", label: "gpt-4o-mini (fast, cheap)" },
-    { value: "gpt-4o", label: "gpt-4o" },
-    { value: "gpt-4.1", label: "gpt-4.1" },
-    { value: "o4-mini", label: "o4-mini" },
-  ],
-  groq: [
-    { value: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
-    { value: "llama-3.1-8b-instant", label: "Llama 3.1 8B (fast)" },
-    { value: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
-    { value: "gemma2-9b-it", label: "Gemma 2 9B" },
-  ],
-};
-
 const $ = (id) => document.getElementById(id);
 
-let state = {
-  cvText: "",
-  pageText: "",
-  pageSource: "",
-  generatedText: "",
-};
+let pageText = "";
 
-function log(msg) {
-  const el = $("log");
-  const time = new Date().toLocaleTimeString();
-  el.textContent = `[${time}] ${msg}\n` + el.textContent;
-}
+const BACKEND_STORAGE_KEY = "pagmind_backend";
+let backendUrl = "";
+let useBackend = false;
 
 function send(msg) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, (response) => resolve(response));
+    chrome.runtime.sendMessage(msg, (r) => resolve(r));
   });
 }
 
-function populateModels(provider) {
-  const sel = $("model");
-  sel.innerHTML = "";
-  for (const m of MODELS[provider] || MODELS.openai) {
-    const opt = document.createElement("option");
-    opt.value = m.value;
-    opt.textContent = m.label;
-    sel.appendChild(opt);
+// --- Listen for page changes ---
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === "PAGE_CHANGED") {
+    resetChat();
+    sendResponse({ ok: true });
   }
+  return true;
+});
+
+function resetChat() {
+  pageText = "";
+  $("messages").innerHTML = "";
+  $("pageDot").className = "page-dot";
+  $("pageIndicator").textContent = "New page detected, reading...";
+  readPage();
 }
 
-$("provider").addEventListener("change", () => {
-  populateModels($("provider").value);
-});
+// --- Settings ---
 
-// ---------- Settings ----------
+function openSettings() {
+  $("settingsPanel").classList.remove("hidden");
+  $("settingsOverlay").classList.remove("hidden");
+}
 
-$("settingsToggle").addEventListener("click", () => {
-  $("settingsPanel").classList.toggle("hidden");
-});
+function closeSettings() {
+  $("settingsPanel").classList.add("hidden");
+  $("settingsOverlay").classList.add("hidden");
+}
+
+$("openSettings").addEventListener("click", openSettings);
+$("closeSettings").addEventListener("click", closeSettings);
+$("settingsOverlay").addEventListener("click", closeSettings);
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(["openaiApiKey", "openaiModel", "provider", "cvText"]);
-  if (stored.openaiApiKey) $("apiKey").value = stored.openaiApiKey;
-  const provider = stored.provider || "openai";
-  $("provider").value = provider;
-  populateModels(provider);
-  if (stored.openaiModel) $("model").value = stored.openaiModel;
-  if (stored.cvText) {
-    state.cvText = stored.cvText;
-    $("cvStatus").textContent = `CV loaded (${stored.cvText.length} characters).`;
-  }
-  if (!stored.openaiApiKey) $("settingsPanel").classList.remove("hidden");
+  const defaults = {
+    apiKey: "",
+    baseUrl: "https://api.openai.com/v1/chat/completions",
+    model: "gpt-4o-mini",
+  };
+  const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
+  const apiKey = s.apiKey || defaults.apiKey;
+  const baseUrl = s.baseUrl || defaults.baseUrl;
+  const model = s.model || defaults.model;
+  $("apiKey").value = apiKey;
+  $("baseUrl").value = baseUrl;
+  $("model").value = model;
+
+  // Backend settings
+  const bk = await chrome.storage.local.get([BACKEND_STORAGE_KEY]);
+  const cfg = bk[BACKEND_STORAGE_KEY] || { url: "", enabled: false };
+  $("backendUrl").value = cfg.url;
+  $("useBackend").checked = cfg.enabled;
+  backendUrl = cfg.url;
+  useBackend = cfg.enabled;
 }
 
 $("saveSettings").addEventListener("click", async () => {
   await chrome.storage.local.set({
-    openaiApiKey: $("apiKey").value.trim(),
-    openaiModel: $("model").value,
-    provider: $("provider").value,
+    apiKey: $("apiKey").value.trim(),
+    baseUrl: $("baseUrl").value.trim(),
+    model: $("model").value.trim(),
   });
-  log("Settings saved.");
-  $("settingsPanel").classList.add("hidden");
+
+  const cfg = {
+    url: $("backendUrl").value.trim(),
+    enabled: $("useBackend").checked,
+  };
+  await chrome.storage.local.set({ [BACKEND_STORAGE_KEY]: cfg });
+  backendUrl = cfg.url;
+  useBackend = cfg.enabled;
+
+  $("settingsStatus").textContent = "Saved.";
+  closeSettings();
 });
 
-// ---------- CV ----------
+// --- Backend API helpers ---
 
-$("setCv").addEventListener("click", async () => {
-  $("setCv").disabled = true;
-  $("cvStatus").textContent = "Reading page...";
-  log("Reading current page as CV...");
-
-  const res = await send({ type: "READ_PAGE", mode: "page" });
-  if (!res.ok) {
-    $("cvStatus").textContent = "Error: " + res.error;
-    log("Error: " + res.error);
-    $("setCv").disabled = false;
-    return;
-  }
-
-  state.cvText = res.text;
-  await chrome.storage.local.set({ cvText: res.text });
-  $("cvStatus").textContent = `CV loaded from page (${res.text.length} characters).`;
-  log(`CV set from page (${res.text.length} chars).`);
-  $("setCv").disabled = false;
-});
-
-$("clearCv").addEventListener("click", async () => {
-  state.cvText = "";
-  await chrome.storage.local.remove("cvText");
-  $("cvStatus").textContent = "No CV set.";
-  log("CV cleared.");
-});
-
-// ---------- Page context ----------
-
-async function readPageContext() {
-  const res = await send({ type: "READ_PAGE", mode: "auto" });
-  if (!res.ok) {
-    $("pageStatus").textContent = "Error: " + res.error;
-    return;
-  }
-  state.pageText = res.text;
-  state.pageSource = res.source;
-  $("pageStatus").textContent = `Read from ${res.source} (${res.text.length} characters).`;
-  $("pagePreview").textContent = res.text.slice(0, 2000);
+async function backendFetch(path, options = {}) {
+  const url = `${backendUrl.replace(/\/$/, "")}/api${path}`;
+  const res = await send({ type: "BACKEND_FETCH", url, options });
+  if (!res.ok) throw new Error(res.error);
+  return res;
 }
 
-$("refreshPage").addEventListener("click", async () => {
-  $("pageStatus").textContent = "Reading...";
-  await readPageContext();
-  log("Page context refreshed.");
+// --- Read page ---
+
+async function readPage() {
+  const res = await send({ type: "READ_PAGE" });
+  if (!res.ok) {
+    $("pageDot").className = "page-dot error";
+    $("pageIndicator").textContent = res.error;
+    return null;
+  }
+  pageText = res.text;
+  $("pageDot").className = "page-dot loaded";
+  $("pageIndicator").textContent = `${res.text.length} chars`;
+  return res.text;
+}
+
+$("refreshBtn").addEventListener("click", async () => {
+  $("pageDot").className = "page-dot";
+  $("pageIndicator").textContent = "Reading...";
+  await readPage();
 });
 
-// ---------- Generate ----------
+// --- Messages ---
 
-$("generate").addEventListener("click", async () => {
-  const promptText = $("prompt").value.trim();
-  const settings = await chrome.storage.local.get(["openaiApiKey", "openaiModel"]);
+function isNearBottom() {
+  return $("messages").scrollHeight - $("messages").scrollTop - $("messages").clientHeight < 80;
+}
 
-  if (!settings.openaiApiKey) {
-    $("genStatus").textContent = "Add your OpenAI API key in settings (⚙️).";
-    $("settingsPanel").classList.remove("hidden");
-    return;
+function addMessage(role, content, writeText) {
+  const el = document.createElement("div");
+  el.className = `message ${role}`;
+  el.textContent = content;
+  const snap = isNearBottom();
+  $("messages").appendChild(el);
+
+  if (role === "assistant" && writeText) {
+    const btn = document.createElement("button");
+    btn.className = "write-btn";
+    btn.textContent = "Write to page";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Writing...";
+      const r = await send({ type: "WRITE_TO_PAGE", text: writeText });
+      if (r.ok) {
+        btn.textContent = "✓ Written";
+        btn.className = "write-btn done";
+      } else {
+        btn.textContent = "✗ " + r.error;
+        btn.className = "write-btn error";
+      }
+    });
+    el.appendChild(btn);
   }
-  if (!promptText) {
-    $("genStatus").textContent = "Enter what you want to write.";
-    return;
+
+  if (snap) $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function removeLoading() {
+  const el = $("messages").querySelector(".message.loading");
+  if (el) el.remove();
+}
+
+function showLoading() {
+  const el = document.createElement("div");
+  el.className = "message loading";
+  el.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+  $("messages").appendChild(el);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+// --- Send ---
+
+async function handleSend() {
+  const text = $("input").value.trim();
+  if (!text) return;
+
+  if (!useBackend) {
+    const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
+    if (!s.apiKey) {
+      addMessage("error", "Set your API key in Settings first.");
+      openSettings();
+      return;
+    }
   }
 
-  const systemParts = [];
-  systemParts.push("You are an expert writing assistant. The user has a CV and is viewing a target page. Use the CV to accurately reflect the user's background and expertise. Use the page context to understand the target audience or requirements.");
+  $("input").value = "";
+  $("input").style.height = "auto";
+  $("sendBtn").disabled = true;
 
-  if (state.cvText) {
-    systemParts.push(`\n\nUSER'S CV:\n${state.cvText}`);
+  addMessage("user", text);
+
+  if (!pageText) {
+    addMessage("system", "Reading page...");
+    await readPage();
   }
-  if (state.pageText) {
-    systemParts.push(`\n\nPAGE CONTEXT:\n${state.pageText}`);
+
+  showLoading();
+
+  if (!pageText) pageText = "";
+
+  if (useBackend) {
+    await handleSendBackend(text);
+  } else {
+    await handleSendDirect(text);
   }
 
-  $("generate").disabled = true;
-  $("genStatus").textContent = "Generating...";
-  log(`Calling ${settings.provider || "openai"}...`);
+  removeLoading();
+  $("sendBtn").disabled = false;
+}
 
+async function handleSendDirect(text) {
+  const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
   const res = await send({
-    type: "GENERATE_TEXT",
+    type: "ASK_AI",
     messages: [
-      { role: "system", content: systemParts.join("") },
-      { role: "user", content: promptText },
+      { role: "system", content: `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText}` },
+      { role: "user", content: text },
     ],
-    apiKey: settings.openaiApiKey,
-    model: settings.openaiModel,
-    provider: settings.provider || "openai",
+    apiKey: s.apiKey,
+    baseUrl: s.baseUrl,
+    model: s.model,
   });
-
-  $("generate").disabled = false;
-
   if (!res.ok) {
-    $("genStatus").textContent = "Error: " + res.error;
-    log("Error generating: " + res.error);
-    return;
+    addMessage("error", res.error);
+  } else {
+    addMessage("assistant", res.text, res.text);
   }
-
-  state.generatedText = res.text;
-  $("resultText").textContent = res.text;
-  $("genStatus").textContent = "Generated.";
-  $("resultSection").classList.remove("hidden");
-  $("writeToPage").disabled = false;
-  log("Text generated.");
-});
-
-// ---------- Write to page ----------
-
-$("writeToPage").addEventListener("click", async () => {
-  if (!state.generatedText) return;
-
-  $("writeToPage").disabled = true;
-  const writeMode = $("writeMode").value;
-  log(`Writing to page (${writeMode})...`);
-
-  const res = await send({
-    type: "WRITE_TO_PAGE",
-    text: state.generatedText,
-    writeMode,
-  });
-
-  if (!res.ok) {
-    log("Error writing: " + res.error);
-    $("writeToPage").disabled = false;
-    return;
-  }
-
-  log("Written to page successfully.");
-});
-
-// ---------- Init ----------
-
-loadSettings();
-
-// Auto-read page context on open
-async function initPageRead() {
-  $("pageStatus").textContent = "Reading page...";
-  await readPageContext();
-  log("Page auto-read on open.");
 }
 
-initPageRead();
+async function handleSendBackend(text) {
+  try {
+    const data = await backendFetch("/proxy/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText}` },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+    addMessage("assistant", data.text, data.text);
+  } catch (e) {
+    addMessage("error", e.message);
+  }
+}
+
+$("sendBtn").addEventListener("click", handleSend);
+
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    handleSend();
+  }
+});
+
+$("input").addEventListener("input", () => {
+  $("sendBtn").disabled = !$("input").value.trim();
+  $("input").style.height = "auto";
+  $("input").style.height = Math.min($("input").scrollHeight, 120) + "px";
+});
+
+// --- Init ---
+
+async function init() {
+  await loadSettings();
+  $("pageIndicator").textContent = "Reading...";
+  await readPage();
+}
+
+init();

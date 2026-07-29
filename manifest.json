@@ -1,26 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "CV Tailor",
-  "version": "2.0.0",
-  "description": "Read your CV from any page, tailor it to job descriptions, and write AI-generated content anywhere.",
-  "permissions": ["sidePanel", "storage", "tabs", "scripting"],
-  "host_permissions": [
-    "https://api.openai.com/*"
-  ],
+  "name": "PageMind",
+  "version": "1.0.0",
+  "description": "Read, chat, and write on any page.",
+  "permissions": ["sidePanel", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Open CV Tailor"
+    "default_title": "Ask about this page"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://*/*", "http://*/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }

@@ -2,74 +2,88 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>CV Tailor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PageMind</title>
 <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
-  <header>
-    <h1>CV Tailor</h1>
-    <button id="settingsToggle" title="Settings">⚙️</button>
-  </header>
+  <div id="settingsOverlay" class="overlay hidden"></div>
 
-  <section id="settingsPanel" class="card hidden">
-    <label>API key
-      <input type="password" id="apiKey" placeholder="sk-... or gsk_..." />
-    </label>
-    <label>Provider
-      <select id="provider">
-        <option value="openai">OpenAI</option>
-        <option value="groq">Groq (free tier)</option>
-      </select>
-    </label>
-    <label>Model
-      <select id="model"></select>
-    </label>
-    <p class="hint">Stored only in this browser's local extension storage.</p>
-    <button id="saveSettings">Save</button>
-  </section>
-
-  <section class="card">
-    <h2>1. Your CV</h2>
-    <p id="cvStatus" class="hint">No CV set. Navigate to your CV page and click below.</p>
-    <button id="setCv">Read CV from current page</button>
-    <button id="clearCv" class="secondary">Clear CV</button>
-  </section>
-
-  <section class="card">
-    <h2>2. Page context</h2>
-    <p id="pageStatus" class="hint">Not read yet. Opens automatically when panel opens.</p>
-    <button id="refreshPage">Refresh page context</button>
-    <details>
-      <summary>Preview</summary>
-      <pre id="pagePreview" class="preview"></pre>
-    </details>
-  </section>
-
-  <section class="card">
-    <h2>3. What to write?</h2>
-    <textarea id="prompt" rows="3" placeholder='e.g. "Write a LinkedIn message introducing myself for this job"\nor "Rewrite this paragraph to highlight React experience"'></textarea>
-  </section>
-
-  <section class="card">
-    <button id="generate" class="primary">Generate</button>
-    <p id="genStatus" class="hint"></p>
-  </section>
-
-  <section id="resultSection" class="card hidden">
-    <h2>4. Review &amp; write</h2>
-    <div id="resultText" class="result-text"></div>
-    <div class="write-controls">
-      <label>Mode:
-        <select id="writeMode">
-          <option value="insert">Insert at cursor</option>
-          <option value="replace">Replace all</option>
-        </select>
-      </label>
-      <button id="writeToPage" class="primary">Write to page</button>
+  <div id="settingsPanel" class="settings-panel hidden">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button id="closeSettings" class="icon-btn">&times;</button>
     </div>
-  </section>
+    <div class="settings-body">
+      <label>API Key
+        <input type="password" id="apiKey" placeholder="sk-... or gsk_..." />
+      </label>
+      <label>API Base URL
+        <input type="text" id="baseUrl" placeholder="https://api.openai.com/v1/chat/completions" />
+      </label>
+      <label>Model
+        <input type="text" id="model" placeholder="gpt-4o-mini" />
+      </label>
+      <hr/>
+      <h3>Backend (optional)</h3>
+      <label>Backend URL
+        <input type="text" id="backendUrl" placeholder="http://localhost:3000" />
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="useBackend" />
+        Use backend for proxy &amp; sync
+      </label>
+      <button id="saveSettings" class="btn-primary">Save</button>
+      <p id="settingsStatus" class="hint"></p>
+    </div>
+  </div>
 
-  <div id="log" class="log"></div>
+  <div id="app">
+    <header class="header">
+      <div class="header-top">
+        <h1>PageMind</h1>
+        <div class="header-actions">
+          <button id="refreshBtn" class="icon-btn" title="Re-read this page">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+          </button>
+          <button id="openSettings" class="icon-btn" title="Settings">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="page-info">
+        <span class="page-dot" id="pageDot"></span>
+        <span id="pageIndicator" class="page-indicator">Not read</span>
+      </div>
+    </header>
+
+    <div id="messages" class="messages">
+      <div class="welcome">
+        <p>Open this panel on any page<br/>and ask me anything about it.</p>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <textarea
+        id="input"
+        rows="1"
+        placeholder="Ask about this page..."
+      ></textarea>
+      <button id="sendBtn" class="send-btn" disabled title="Send">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </div>
+  </div>
 
   <script src="sidepanel.js"></script>
 </body>
