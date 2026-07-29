@@ -4,7 +4,7 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
 
-// --- Session helpers (chrome.storage.session) ---
+// --- Session helpers ---
 
 function sessionKey(tabId) {
   return SESSION_PREFIX + tabId;
@@ -16,30 +16,32 @@ async function getSession(tabId) {
   return data[key] || null;
 }
 
-async function setSession(tabId, session) {
-  await chrome.storage.session.set({ [sessionKey(tabId)]: session });
+async function setSession(tabId, s) {
+  await chrome.storage.session.set({ [sessionKey(tabId)]: s });
 }
 
 async function deleteSession(tabId) {
   await chrome.storage.session.remove(sessionKey(tabId));
 }
 
-// --- Detect tab switches & URL changes ---
+// --- Tab detection ---
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  notifySidePanel(tabId, false);
+  chrome.tabs.get(tabId).then((tab) => {
+    notifySidePanel(tabId, false, tab.url);
+  });
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url) {
     chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-      if (tabs[0]?.id === tabId) notifySidePanel(tabId, true);
+      if (tabs[0]?.id === tabId) notifySidePanel(tabId, true, tab.url);
     });
   }
 });
 
-function notifySidePanel(tabId, urlChanged) {
-  chrome.runtime.sendMessage({ type: "tabChanged", tabId, urlChanged }).catch(() => {});
+function notifySidePanel(tabId, urlChanged, url) {
+  chrome.runtime.sendMessage({ type: "tabChanged", tabId, urlChanged, url }).catch(() => {});
 }
 
 // --- Message handling ---
@@ -71,7 +73,7 @@ async function handleMessage(msg) {
       return { ok: true };
     case "GET_ACTIVE_TAB": {
       const tab = await getActiveTab();
-      return { tabId: tab.id };
+      return { tabId: tab.id, url: tab.url };
     }
     default:
       throw new Error("Unknown type: " + msg.type);

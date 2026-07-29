@@ -2,12 +2,14 @@ const $ = (id) => document.getElementById(id);
 
 let pageText = "";
 let currentTabId = null;
+let currentHostname = "";
 let ready = false;
 
 const MAX_CONTEXT_CHARS = 96000;
 const MAX_HISTORY_MSGS = 20;
-
 const BACKEND_STORAGE_KEY = "pagmind_backend";
+const PROFILE_KEY = "owner_profile";
+
 let backendUrl = "";
 let useBackend = false;
 
@@ -18,6 +20,181 @@ function send(msg) {
       else resolve(r);
     });
   });
+}
+
+// --- Profile auto-learning ---
+
+async function getProfile() {
+  const data = await chrome.storage.local.get(PROFILE_KEY);
+  return data[PROFILE_KEY] || {
+    name: "", title: "", skills: [], cv: "", tone: "",
+    frequentSites: {}, totalQuestions: 0,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+}
+
+async function saveProfile(p) {
+  p.updatedAt = new Date().toISOString();
+  await chrome.storage.local.set({ [PROFILE_KEY]: p });
+}
+
+function extractName(text) {
+  const patterns = [
+    /(?:^|\n)\s*name\s*[:：]\s*(.+)/i,
+    /my\s+name\s+is\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1].trim().slice(0, 80);
+  }
+  const emailName = text.match(/([A-Z][a-z]+)\s+([A-Z][a-z]+)\s*@/);
+  if (emailName) return emailName[1] + " " + emailName[2];
+  return null;
+}
+
+function extractTitle(text) {
+  const patterns = [
+    /(?:^|\n)\s*(?:title|role|position)\s*[:：]\s*(.+)/i,
+    /\b(Software Engineer|Developer|Full.?Stack|Frontend|Backend|DevOps|Data Scientist|ML Engineer|Architect|Designer|Product Manager|Engineer)\b/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[1] || m[0];
+  }
+  return null;
+}
+
+const COMMON_SKILLS = [
+  "React", "Node", "Python", "TypeScript", "JavaScript", "Go", "Rust",
+  "AWS", "Docker", "Kubernetes", "PostgreSQL", "MongoDB", "Redis",
+  "GraphQL", "REST", "NestJS", "Express", "Next.js", "Vue", "Angular",
+  "TensorFlow", "PyTorch", "LangChain", "OpenAI", "LLM", "AI",
+  "Machine Learning", "Deep Learning", "SQL", "NoSQL", "Git",
+];
+
+function extractSkills(text) {
+  const found = [];
+  for (const skill of COMMON_SKILLS) {
+    const re = new RegExp("\\b" + skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
+    if (re.test(text) && !found.includes(skill)) found.push(skill);
+  }
+  return found;
+}
+
+function isResumeLike(text) {
+  const markers = ["experience", "education", "skills", "work history", "employment",
+    "summary", "objective", "projects", "certifications", "languages"];
+  let count = 0;
+  for (const m of markers) {
+    if (new RegExp("\\b" + m + "\\b", "i").test(text)) count++;
+  }
+  return count >= 3;
+}
+
+async function learnFromPage(text, hostname) {
+  if (!text || text.length < 50) return;
+  const profile = await getProfile();
+
+  const name = extractName(text);
+  const title = extractTitle(text);
+  const skills = extractSkills(text);
+  const isCV = isResumeLike(text);
+  let changed = false;
+
+  if (name && !profile.name) { profile.name = name; changed = true; }
+  if (title && !profile.title) { profile.title = title; changed = true; }
+  if (skills.length > 0) {
+    const before = profile.skills.length;
+    profile.skills = [...new Set([...profile.skills, ...skills])];
+    if (profile.skills.length !== before) changed = true;
+  }
+  if (isCV && text.length > profile.cv.length) {
+    profile.cv = text.slice(0, 10000);
+    changed = true;
+  }
+
+  if (hostname) {
+    if (!profile.frequentSites[hostname]) {
+      profile.frequentSites[hostname] = { count: 0, tasks: [] };
+    }
+    profile.frequentSites[hostname].count++;
+    changed = true;
+  }
+
+  if (changed) await saveProfile(profile);
+}
+
+function detectTone(text) {
+  const lower = text.toLowerCase();
+  if (/\b(professional|formal|business)\b/.test(lower)) return "professional";
+  if (/\b(casual|friendly|informal|chatty)\b/.test(lower)) return "casual";
+  if (/\b(creative|fun|playful|humorous)\b/.test(lower)) return "creative";
+  if (/\b(brief|short|concise|quick)\b/.test(lower)) return "concise";
+  if (/\b(detailed|elaborate|thorough|in.?depth)\b/.test(lower)) return "detailed";
+  return null;
+}
+
+function inferTask(text) {
+  if (/\b(cover letter|proposal|gig|hire|freelance|bid)\b/i.test(text)) return "freelance proposals";
+  if (/\b(linkedin|connection|network|recommend)\b/i.test(text)) return "networking";
+  if (/\b(apply|application|resume|job|interview|hiring)\b/i.test(text)) return "job applications";
+  if (/\b(email|reply|message|outreach|inmail)\b/i.test(text)) return "outreach messages";
+  if (/\b(rewrite|improve|edit|revise|polish)\b/i.test(text)) return "content editing";
+  if (/\b(summarize|summary|tl;dr|condense)\b/i.test(text)) return "summarization";
+  return null;
+}
+
+async function learnFromPrompt(text, hostname) {
+  if (!text) return;
+  const profile = await getProfile();
+  let changed = false;
+
+  if (hostname && profile.frequentSites[hostname]) {
+    const site = profile.frequentSites[hostname];
+    const task = inferTask(text);
+    if (task && !site.tasks.includes(task)) {
+      site.tasks.push(task);
+      if (site.tasks.length > 5) site.tasks.shift();
+      changed = true;
+    }
+  }
+
+  if (hostname && !profile.frequentSites[hostname]) {
+    profile.frequentSites[hostname] = { count: 1, tasks: [] };
+    const task = inferTask(text);
+    if (task) profile.frequentSites[hostname].tasks.push(task);
+    changed = true;
+  }
+
+  const tone = detectTone(text);
+  if (tone && !profile.tone) { profile.tone = tone; changed = true; }
+
+  profile.totalQuestions = (profile.totalQuestions || 0) + 1;
+  changed = true;
+
+  if (changed) await saveProfile(profile);
+}
+
+function buildProfileContext(profile, hostname) {
+  const parts = [];
+  if (profile.name) parts.push(`- Name: ${profile.name}`);
+  if (profile.title) parts.push(`- Role: ${profile.title}`);
+  if (profile.skills?.length) parts.push(`- Skills: ${profile.skills.join(", ")}`);
+  if (profile.tone) parts.push(`- Preferred tone: ${profile.tone}`);
+
+  if (hostname && profile.frequentSites?.[hostname]) {
+    const site = profile.frequentSites[hostname];
+    parts.push(`- Current site: ${hostname} (visited ${site.count} times)`);
+    if (site.tasks?.length) {
+      parts.push(`- Typical tasks on this site: ${site.tasks.join(", ")}`);
+    }
+  }
+
+  if (profile.totalQuestions > 5) {
+    parts.push(`- Extension usage: ${profile.totalQuestions} questions asked total`);
+  }
+
+  return parts.length > 0 ? "\n\nUSER PROFILE:\n" + parts.join("\n") : "";
 }
 
 // --- Session ---
@@ -93,10 +270,13 @@ async function readAndSave() {
   await saveSession();
 }
 
-// --- Build AI context with conversation memory ---
+// --- Build AI context with profile + conversation memory ---
 
-function buildChatMessages(userText, prevMessages) {
-  const systemContent = `You are a helpful assistant. Answer the user's question based on the page content below.\n\nPAGE CONTENT:\n${pageText || "(none)"}`;
+async function buildChatMessages(userText, prevMessages) {
+  const profile = await getProfile();
+  const profileCtx = buildProfileContext(profile, currentHostname);
+
+  const systemContent = `You are a helpful assistant. Answer the user's question based on the page content below.${profileCtx}\n\nPAGE CONTENT:\n${pageText || "(none)"}`;
 
   const history = (prevMessages || [])
     .filter((m) => m.role === "user" || m.role === "assistant")
@@ -124,6 +304,9 @@ function buildChatMessages(userText, prevMessages) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type !== "tabChanged") return true;
+  if (msg.url) {
+    try { currentHostname = new URL(msg.url).hostname; } catch (_) {}
+  }
   sendResponse({ ok: true });
   if (!ready) return true;
 
@@ -213,6 +396,10 @@ async function readPage() {
   pageText = res.text;
   $("pageDot").className = "page-dot loaded";
   $("pageIndicator").textContent = `${res.text.length} chars`;
+
+  // Auto-learn from page content
+  learnFromPage(pageText, currentHostname);
+
   return res.text;
 }
 
@@ -268,7 +455,7 @@ function showLoading() {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-// --- Send with conversation memory ---
+// --- Send with conversation memory + auto-learn ---
 
 async function handleSend() {
   const text = $("input").value.trim();
@@ -283,7 +470,10 @@ async function handleSend() {
     }
   }
 
-  // Get previous messages for context BEFORE updating DOM
+  // Learn from prompt before anything else
+  learnFromPrompt(text, currentHostname);
+
+  // Get previous messages for context
   const res = await send({ type: "GET_SESSION", tabId: currentTabId });
   const prevMessages = (res.session?.messages || []);
 
@@ -300,7 +490,7 @@ async function handleSend() {
   showLoading();
 
   if (!pageText) pageText = "";
-  const context = buildChatMessages(text, prevMessages);
+  const context = await buildChatMessages(text, prevMessages);
 
   if (useBackend) {
     await handleSendBackend(context);
@@ -316,11 +506,8 @@ async function handleSend() {
 async function handleSendDirect(context) {
   const s = await chrome.storage.local.get(["apiKey", "baseUrl", "model"]);
   const res = await send({
-    type: "ASK_AI",
-    messages: context,
-    apiKey: s.apiKey,
-    baseUrl: s.baseUrl,
-    model: s.model,
+    type: "ASK_AI", messages: context,
+    apiKey: s.apiKey, baseUrl: s.baseUrl, model: s.model,
   });
   if (!res.ok) addMessage("error", res.error);
   else addMessage("assistant", res.text, res.text);
@@ -329,8 +516,7 @@ async function handleSendDirect(context) {
 async function handleSendBackend(context) {
   try {
     const data = await backendFetch("/proxy/chat", {
-      method: "POST",
-      body: JSON.stringify({ messages: context }),
+      method: "POST", body: JSON.stringify({ messages: context }),
     });
     addMessage("assistant", data.text, data.text);
   } catch (e) {
@@ -354,10 +540,18 @@ async function init() {
   await loadSettings();
   const tab = await send({ type: "GET_ACTIVE_TAB" });
   currentTabId = tab.tabId;
+  if (tab.url) {
+    try { currentHostname = new URL(tab.url).hostname; } catch (_) {}
+  }
   updateTabIdDisplay();
 
   const found = await loadSession();
-  if (!found) await readAndSave();
+  if (!found) {
+    await readAndSave();
+  } else {
+    // Even if session loaded, learn from the page text
+    learnFromPage(pageText, currentHostname);
+  }
   ready = true;
 }
 
