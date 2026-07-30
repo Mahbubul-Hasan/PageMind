@@ -1,24 +1,5 @@
-import type { BackgroundRequest, BackgroundResponse, Session } from '../types';
-
-const SESSION_PREFIX = 'session_';
-
-function sessionKey(tabId: number): string {
-  return SESSION_PREFIX + tabId;
-}
-
-async function getSession(tabId: number): Promise<Session | null> {
-  const key = sessionKey(tabId);
-  const data = await chrome.storage.session.get(key);
-  return (data[key] as Session) ?? null;
-}
-
-async function setSession(tabId: number, s: Session): Promise<void> {
-  await chrome.storage.session.set({ [sessionKey(tabId)]: s });
-}
-
-async function deleteSession(tabId: number): Promise<void> {
-  await chrome.storage.session.remove(sessionKey(tabId));
-}
+import type { BackgroundRequest, BackgroundResponse, TabSession, TabSessionData } from '../types';
+import { STORAGE_KEYS } from '../types';
 
 function notifySidePanel(tabId: number, urlChanged: boolean, url?: string): void {
   chrome.runtime.sendMessage({ type: 'tabChanged', tabId, urlChanged, url }).catch(() => {});
@@ -74,6 +55,49 @@ async function sendToTabWithInject(
     return await sendToTab(tabId, msg);
   }
 }
+
+// --- Session store ---
+
+function sessionsKey(): string {
+  return STORAGE_KEYS.SESSIONS;
+}
+
+async function getTabData(tabId: number): Promise<TabSessionData> {
+  const data = await chrome.storage.session.get(sessionsKey());
+  const all = (data[sessionsKey()] ?? {}) as Record<string, TabSessionData>;
+  return all[tabId] ?? { activeIdx: 0, sessions: [] };
+}
+
+async function setTabData(tabId: number, d: TabSessionData): Promise<void> {
+  const data = await chrome.storage.session.get(sessionsKey());
+  const all = (data[sessionsKey()] ?? {}) as Record<string, TabSessionData>;
+  all[tabId] = d;
+  await chrome.storage.session.set({ [sessionsKey()]: all });
+}
+
+function makeSession(messages?: TabSession['messages']): TabSession {
+  return {
+    id: crypto.randomUUID().slice(0, 8),
+    label: 'Chat ' + Date.now().toString(36).slice(-4),
+    createdAt: Date.now(),
+    messages: messages ?? [],
+    pageText: '',
+    pageStructure: '',
+    indicator: { text: 'Not read', dotClass: 'page-dot' },
+  };
+}
+
+async function handleSessions(tabId: number): Promise<TabSessionData> {
+  const d = await getTabData(tabId);
+  if (d.sessions.length === 0) {
+    d.sessions = [makeSession()];
+    d.activeIdx = 0;
+    await setTabData(tabId, d);
+  }
+  return d;
+}
+
+// --- Message handling ---
 
 async function readActivePage(): Promise<{ text: string }> {
   const tab = await getActiveTab();
@@ -140,14 +164,47 @@ async function handleMessage(msg: BackgroundRequest): Promise<Record<string, unk
       return sendToTabWithInject((await getActiveTab()).id!, { type: 'EXECUTE_ACTIONS', actions: msg.actions });
     case 'BACKEND_FETCH':
       return backendFetch(msg.url, msg.options);
-    case 'GET_SESSION':
-      return { session: await getSession(msg.tabId) };
-    case 'SAVE_SESSION':
-      await setSession(msg.tabId, msg.session);
+    case 'GET_SESSIONS':
+      return { sessions: await handleSessions(msg.tabId) };
+    case 'SAVE_SESSION': {
+      const d = await getTabData(msg.tabId);
+      const idx = d.sessions.findIndex((s) => s.id === msg.session.id);
+      if (idx >= 0) d.sessions[idx] = msg.session;
+      await setTabData(msg.tabId, d);
       return { ok: true };
-    case 'DELETE_SESSION':
-      await deleteSession(msg.tabId);
+    }
+    case 'CREATE_SESSION': {
+      const d = await getTabData(msg.tabId);
+      d.sessions.push(makeSession());
+      d.activeIdx = d.sessions.length - 1;
+      await setTabData(msg.tabId, d);
+      return { sessions: d };
+    }
+    case 'DELETE_SESSION': {
+      const d = await getTabData(msg.tabId);
+      const idx = d.sessions.findIndex((s) => s.id === msg.sessionId);
+      if (idx >= 0) {
+        d.sessions.splice(idx, 1);
+        if (d.sessions.length === 0) d.sessions.push(makeSession());
+        if (d.activeIdx >= d.sessions.length) d.activeIdx = d.sessions.length - 1;
+      }
+      await setTabData(msg.tabId, d);
+      return { sessions: d };
+    }
+    case 'RENAME_SESSION': {
+      const d = await getTabData(msg.tabId);
+      const s = d.sessions.find((s) => s.id === msg.sessionId);
+      if (s) s.label = msg.label.slice(0, 60);
+      await setTabData(msg.tabId, d);
       return { ok: true };
+    }
+    case 'SWITCH_SESSION': {
+      const d = await getTabData(msg.tabId);
+      const idx = d.sessions.findIndex((s) => s.id === msg.sessionId);
+      if (idx >= 0) d.activeIdx = idx;
+      await setTabData(msg.tabId, d);
+      return { sessions: d };
+    }
     case 'GET_ACTIVE_TAB': {
       const tab = await getActiveTab();
       return { tabId: tab.id!, url: tab.url };

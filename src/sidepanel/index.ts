@@ -1,5 +1,5 @@
 import '../styles/sidepanel.css';
-import type { ChatMessage, BackgroundResponse, Session, PageStructure, ActionResult } from '../types';
+import type { ChatMessage, BackgroundResponse, TabSession, TabSessionData, PageStructure, ActionResult } from '../types';
 import { CONSTANTS } from '../types';
 import { pageText, currentTabId, currentHostname, ready, setPageText, setCurrentTabId, setCurrentHostname, setReady } from './state';
 import { getProfile, learnFromPage, learnFromPrompt, buildProfileContext } from './profile';
@@ -25,7 +25,6 @@ const saveSettingsBtn = $('saveSettings') as HTMLButtonElement;
 const clearProfileBtn = $('clearProfile') as HTMLButtonElement;
 const settingsStatus = $('settingsStatus') as HTMLElement;
 
-// Settings inputs
 const apiKeyEl = $('apiKey') as HTMLInputElement;
 const baseUrlEl = $('baseUrl') as HTMLInputElement;
 const modelEl = $('model') as HTMLInputElement;
@@ -35,7 +34,17 @@ const profileNameEl = $('profileName') as HTMLInputElement;
 const profileStatsEl = $('profileStats') as HTMLElement;
 const suggestionsEl = $('suggestions') as HTMLElement;
 
+// Session bar
+const sessionLabel = $('sessionLabel') as HTMLElement;
+const prevSessionBtn = $('prevSession') as HTMLButtonElement;
+const nextSessionBtn = $('nextSession') as HTMLButtonElement;
+const newSessionBtn = $('newSession') as HTMLButtonElement;
+const deleteSessionBtn = $('deleteSession') as HTMLButtonElement;
+const renameSessionBtn = $('renameSessionBtn') as HTMLButtonElement;
+
 let pageStructureStr = '';
+let sessionsData: TabSessionData = { activeIdx: 0, sessions: [] };
+let activeSession: TabSession | null = null;
 
 // --- Messaging ---
 
@@ -72,27 +81,32 @@ async function updatePageContext(): Promise<boolean> {
   return true;
 }
 
-// --- Session ---
+// --- Session management ---
 
-async function saveSession(): Promise<void> {
-  if (!currentTabId) return;
-  await send({
-    type: 'SAVE_SESSION',
-    tabId: currentTabId,
-    session: {
-      pageText,
-      pageStructure: pageStructureStr,
-      messages: serializeMessages(messagesEl),
-      indicator: getIndicatorState(pageDot, pageIndicator),
-    } as Session,
-  });
+function syncActiveSession(): void {
+  activeSession = sessionsData.sessions[sessionsData.activeIdx] ?? null;
 }
 
-async function loadSession(): Promise<boolean> {
-  if (!currentTabId) return false;
-  const res = await send({ type: 'GET_SESSION', tabId: currentTabId } as Record<string, unknown>);
-  const s = res.session as Session | undefined;
-  if (!s) return false;
+function renderSessionBar(): void {
+  const total = sessionsData.sessions.length;
+  if (activeSession) {
+    sessionLabel.textContent = activeSession.label;
+  } else {
+    sessionLabel.textContent = 'No sessions';
+  }
+  prevSessionBtn.disabled = sessionsData.activeIdx <= 0;
+  nextSessionBtn.disabled = sessionsData.activeIdx >= total - 1;
+  deleteSessionBtn.disabled = total <= 1;
+}
+
+function copyUItoSession(s: TabSession): void {
+  s.messages = serializeMessages(messagesEl);
+  s.pageText = pageText;
+  s.pageStructure = pageStructureStr;
+  s.indicator = getIndicatorState(pageDot, pageIndicator);
+}
+
+function loadSessionToUI(s: TabSession): void {
   setPageText(s.pageText || '');
   pageStructureStr = s.pageStructure || '';
   renderMessages(messagesEl, s.messages);
@@ -100,18 +114,132 @@ async function loadSession(): Promise<boolean> {
   if (messagesEl.children.length > 1) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
-  return true;
 }
 
-function updateTabIdDisplay(): void {
-  tabIdDisplay.textContent = currentTabId ? `tab:${currentTabId}` : '';
+async function getSessionsData(): Promise<void> {
+  if (!currentTabId) {
+    sessionsData = { activeIdx: 0, sessions: [] };
+    activeSession = null;
+    return;
+  }
+  const res = await send({ type: 'GET_SESSIONS', tabId: currentTabId });
+  if (res.ok && res.sessions) {
+    sessionsData = res.sessions as TabSessionData;
+  } else {
+    sessionsData = { activeIdx: 0, sessions: [] };
+  }
+  syncActiveSession();
+}
+
+async function saveCurrentSessionToBg(): Promise<void> {
+  if (!activeSession || !currentTabId) return;
+  copyUItoSession(activeSession);
+  await send({ type: 'SAVE_SESSION', tabId: currentTabId, session: activeSession });
+}
+
+async function readAndSaveNoUpdate(): Promise<void> {
+  pageDot.className = 'page-dot';
+  pageIndicator.textContent = 'Reading...';
+  const ok = await updatePageContext();
+  if (!activeSession) {
+    await getSessionsData();
+    if (!activeSession) return;
+  }
+  activeSession.pageText = pageText;
+  activeSession.pageStructure = pageStructureStr;
+  if (ok) {
+    await send({ type: 'SAVE_SESSION', tabId: currentTabId!, session: activeSession });
+  }
 }
 
 async function readAndSave(): Promise<void> {
   pageDot.className = 'page-dot';
   pageIndicator.textContent = 'Reading...';
   await updatePageContext();
-  await saveSession();
+  await saveCurrentSessionToBg();
+}
+
+function updateTabIdDisplay(): void {
+  tabIdDisplay.textContent = currentTabId ? `tab:${currentTabId}` : '';
+}
+
+// --- Session actions ---
+
+async function switchToSession(sessionId: string): Promise<void> {
+  if (!currentTabId) return;
+  await saveCurrentSessionToBg();
+  const res = await send({ type: 'SWITCH_SESSION', tabId: currentTabId, sessionId });
+  if (res.ok && res.sessions) {
+    sessionsData = res.sessions as TabSessionData;
+    syncActiveSession();
+    suggestionsEl.classList.toggle('hidden', (activeSession?.messages?.length ?? 0) > 0);
+    loadSessionToUI(activeSession!);
+    renderSessionBar();
+  }
+}
+
+async function createNewSession(): Promise<void> {
+  if (!currentTabId) return;
+  await saveCurrentSessionToBg();
+  const res = await send({ type: 'CREATE_SESSION', tabId: currentTabId });
+  if (res.ok && res.sessions) {
+    sessionsData = res.sessions as TabSessionData;
+    syncActiveSession();
+    suggestionsEl.classList.remove('hidden');
+    renderMessages(messagesEl);
+    pageStructureStr = '';
+    setPageText('');
+    renderSessionBar();
+    await readAndSaveNoUpdate();
+  }
+}
+
+async function deleteCurrentSession(): Promise<void> {
+  if (!activeSession || !currentTabId) return;
+  const total = sessionsData.sessions.length;
+  if (total <= 1) return;
+  const res = await send({ type: 'DELETE_SESSION', tabId: currentTabId, sessionId: activeSession.id });
+  if (res.ok && res.sessions) {
+    sessionsData = res.sessions as TabSessionData;
+    syncActiveSession();
+    suggestionsEl.classList.toggle('hidden', (activeSession?.messages?.length ?? 0) > 0);
+    loadSessionToUI(activeSession!);
+    renderSessionBar();
+  }
+}
+
+async function renameSession(sessionId: string, label: string): Promise<void> {
+  if (!currentTabId) return;
+  await send({ type: 'RENAME_SESSION', tabId: currentTabId, sessionId, label });
+  await getSessionsData();
+  renderSessionBar();
+}
+
+// --- Inline rename ---
+
+function startRename(): void {
+  if (!activeSession) return;
+  const current = activeSession.label;
+  sessionLabel.contentEditable = 'true';
+  sessionLabel.classList.add('editing');
+  sessionLabel.textContent = current;
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(sessionLabel);
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  sessionLabel.focus();
+}
+
+function finishRename(): void {
+  sessionLabel.contentEditable = 'false';
+  sessionLabel.classList.remove('editing');
+  if (!activeSession) return;
+  const newLabel = (sessionLabel.textContent ?? '').trim().slice(0, 60) || activeSession.label;
+  sessionLabel.textContent = newLabel;
+  if (newLabel !== activeSession.label) {
+    renameSession(activeSession.id, newLabel);
+  }
 }
 
 // --- Build AI context ---
@@ -196,7 +324,6 @@ async function executeActionLoop(context: ChatMessage[]): Promise<void> {
   while (!done && loopCount < maxLoops) {
     loopCount++;
 
-    // Call AI
     const res = await callAI(currentContext);
     if (!res.ok) {
       addMessage(messagesEl, 'error', res.error ?? 'Request failed');
@@ -207,7 +334,6 @@ async function executeActionLoop(context: ChatMessage[]): Promise<void> {
     const actions = parseActions(aiText);
     const hasActions = actions.length > 0 && !(actions.length === 1 && actions[0].command === 'DONE');
 
-    // Show AI response
     const cleanText = aiText.replace(/^(TYPE|CLICK|SELECT|SCROLL|WAIT|READ|DONE).*/gm, '').trim();
     if (cleanText) {
       addMessage(messagesEl, 'assistant', cleanText);
@@ -218,7 +344,6 @@ async function executeActionLoop(context: ChatMessage[]): Promise<void> {
       continue;
     }
 
-    // Execute actions
     for (const action of actions) {
       if (action.command === 'DONE') {
         done = true;
@@ -238,14 +363,12 @@ async function executeActionLoop(context: ChatMessage[]): Promise<void> {
       const result = results[0] ?? { command: action.command, success: false, error: 'No result' };
       updateActionStep(stepEl, result);
 
-      // If READ was requested after WAIT/CLICK
       if (result.success && (action.command === 'CLICK' || action.command === 'SELECT')) {
         await new Promise((r) => setTimeout(r, 500));
         await updatePageContext();
       }
     }
 
-    // Build next context with updated page
     currentContext = await buildChatMessages(
       'Continue with the task based on the current page state.',
       serializeMessages(messagesEl),
@@ -299,8 +422,9 @@ async function handleSend(): Promise<void> {
 
   learnFromPrompt(text, currentHostname);
 
-  const res = await send({ type: 'GET_SESSION', tabId: currentTabId } as Record<string, unknown>);
-  const prevMessages = ((res.session as Session)?.messages ?? []) as ChatMessage[];
+  if (!activeSession || !currentTabId) return;
+
+  const prevMessages = activeSession.messages ?? [];
 
   if (!pageStructureStr) {
     addMessage(messagesEl, 'system', 'Reading page...');
@@ -308,6 +432,10 @@ async function handleSend(): Promise<void> {
     if (!ok) {
       addMessage(messagesEl, 'error', 'Could not read page. Make sure you are on a web page.');
       return;
+    }
+    if (activeSession) {
+      activeSession.pageText = pageText;
+      activeSession.pageStructure = pageStructureStr;
     }
   }
 
@@ -323,7 +451,10 @@ async function handleSend(): Promise<void> {
 
   removeLoading(messagesEl);
   sendBtn.disabled = false;
-  await saveSession();
+  if (activeSession) {
+    copyUItoSession(activeSession);
+    await send({ type: 'SAVE_SESSION', tabId: currentTabId!, session: activeSession });
+  }
 }
 
 // --- Tab switch ---
@@ -336,24 +467,31 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {
   }
   if (!ready) return;
 
-  if (msg.urlChanged && msg.tabId === currentTabId) {
-    send({ type: 'DELETE_SESSION', tabId: currentTabId });
-    messagesEl.innerHTML = '';
-    setPageText('');
-    pageStructureStr = '';
-    updateTabIdDisplay();
+  const newTabId = msg.tabId as number;
+  const urlChanged = msg.urlChanged as boolean;
+
+  // Same tab, URL changed — reread page but DON'T delete session
+  if (urlChanged && newTabId === currentTabId) {
     suggestionsEl.classList.remove('hidden');
     readAndSave();
     return;
   }
 
-  if (msg.tabId === currentTabId) return;
+  // Different tab — save old, load new
+  if (newTabId === currentTabId) return;
 
-  saveSession().then(() => {
-    setCurrentTabId(msg.tabId as number);
+  saveCurrentSessionToBg().then(() => {
+    setCurrentTabId(newTabId);
     updateTabIdDisplay();
-    loadSession().then((found) => {
-      if (!found) readAndSave();
+    getSessionsData().then(() => {
+      if (activeSession) {
+        suggestionsEl.classList.toggle('hidden', activeSession.messages?.length > 0);
+        loadSessionToUI(activeSession);
+        renderSessionBar();
+      }
+      if (!activeSession?.messages?.length && !pageStructureStr) {
+        readAndSaveNoUpdate();
+      }
     });
   });
 });
@@ -395,6 +533,46 @@ clearProfileBtn.addEventListener('click', async () => {
   settingsStatus.textContent = 'Profile cleared.';
 });
 
+// Session bar events
+prevSessionBtn.addEventListener('click', () => {
+  if (!activeSession || sessionsData.activeIdx <= 0) return;
+  const prev = sessionsData.sessions[sessionsData.activeIdx - 1];
+  if (prev) switchToSession(prev.id);
+});
+
+nextSessionBtn.addEventListener('click', () => {
+  if (!activeSession || sessionsData.activeIdx >= sessionsData.sessions.length - 1) return;
+  const next = sessionsData.sessions[sessionsData.activeIdx + 1];
+  if (next) switchToSession(next.id);
+});
+
+newSessionBtn.addEventListener('click', createNewSession);
+
+deleteSessionBtn.addEventListener('click', () => {
+  if (!activeSession || sessionsData.sessions.length <= 1) return;
+  if (confirm(`Delete "${activeSession.label}"?`)) {
+    deleteCurrentSession();
+  }
+});
+
+renameSessionBtn.addEventListener('click', startRename);
+
+sessionLabel.addEventListener('click', startRename);
+
+sessionLabel.addEventListener('blur', finishRename);
+
+sessionLabel.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sessionLabel.blur();
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (activeSession) sessionLabel.textContent = activeSession.label;
+    finishRename();
+  }
+});
+
 // --- Init ---
 
 async function init(): Promise<void> {
@@ -406,9 +584,16 @@ async function init(): Promise<void> {
   }
   updateTabIdDisplay();
 
-  const found = await loadSession();
-  if (!found) {
-    await readAndSave();
+  await getSessionsData();
+
+  if (activeSession) {
+    suggestionsEl.classList.toggle('hidden', activeSession.messages?.length > 0);
+    loadSessionToUI(activeSession);
+    renderSessionBar();
+  }
+
+  if (!activeSession?.messages?.length && !pageStructureStr) {
+    await readAndSaveNoUpdate();
   } else {
     if (pageText) learnFromPage(pageText, currentHostname);
   }

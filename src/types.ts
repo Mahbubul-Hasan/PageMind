@@ -20,11 +20,19 @@ export interface IndicatorState {
   dotClass: string;
 }
 
-export interface Session {
-  pageText: string;
-  pageStructure?: string;
+export interface TabSession {
+  id: string;
+  label: string;
+  createdAt: number;
   messages: ChatMessage[];
+  pageText: string;
+  pageStructure: string;
   indicator: IndicatorState;
+}
+
+export interface TabSessionData {
+  activeIdx: number;
+  sessions: TabSession[];
 }
 
 export interface BackendConfig {
@@ -35,6 +43,7 @@ export interface BackendConfig {
 export const STORAGE_KEYS = {
   BACKEND: 'pagmind_backend',
   PROFILE: 'owner_profile',
+  SESSIONS: 'tab_sessions_data',
   API_KEY: 'apiKey',
   BASE_URL: 'baseUrl',
   MODEL: 'model',
@@ -49,6 +58,7 @@ export const CONSTANTS = {
   NAME_MAX_LENGTH: 80,
   MAX_VISIBLE_TEXT_CHARS: 8000,
   MAX_STRUCTURE_ELEMENTS: 80,
+  SESSION_LABEL_MAX: 60,
 } as const;
 
 export const RESUME_MARKERS = [
@@ -151,9 +161,12 @@ export type BackgroundRequest =
   | { type: 'GET_PAGE_STRUCTURE' }
   | { type: 'EXECUTE_ACTIONS'; actions: Action[] }
   | { type: 'BACKEND_FETCH'; url: string; options: Record<string, unknown> }
-  | { type: 'GET_SESSION'; tabId: number }
-  | { type: 'SAVE_SESSION'; tabId: number; session: Session }
-  | { type: 'DELETE_SESSION'; tabId: number }
+  | { type: 'GET_SESSIONS'; tabId: number }
+  | { type: 'SAVE_SESSION'; tabId: number; session: TabSession }
+  | { type: 'CREATE_SESSION'; tabId: number }
+  | { type: 'DELETE_SESSION'; tabId: number; sessionId: string }
+  | { type: 'RENAME_SESSION'; tabId: number; sessionId: string; label: string }
+  | { type: 'SWITCH_SESSION'; tabId: number; sessionId: string }
   | { type: 'GET_ACTIVE_TAB' };
 
 export type ContentRequest =
@@ -168,7 +181,8 @@ export interface BackgroundResponse {
   text?: string;
   structure?: PageStructure;
   results?: ActionResult[];
-  session?: Session | null;
+  sessions?: TabSessionData;
+  session?: TabSession;
   tabId?: number;
   url?: string;
 }
