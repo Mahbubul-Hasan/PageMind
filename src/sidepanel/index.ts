@@ -117,12 +117,12 @@ function loadSessionToUI(s: TabSession): void {
 }
 
 async function getSessionsData(): Promise<void> {
-  if (!currentTabId) {
+  if (!currentHostname) {
     sessionsData = { activeIdx: 0, sessions: [] };
     activeSession = null;
     return;
   }
-  const res = await send({ type: 'GET_SESSIONS', tabId: currentTabId });
+  const res = await send({ type: 'GET_SESSIONS', hostname: currentHostname });
   if (res.ok && res.sessions) {
     sessionsData = res.sessions as TabSessionData;
   } else {
@@ -131,10 +131,11 @@ async function getSessionsData(): Promise<void> {
   syncActiveSession();
 }
 
-async function saveCurrentSessionToBg(): Promise<void> {
-  if (!activeSession || !currentTabId) return;
+async function saveCurrentSessionToBg(host?: string): Promise<void> {
+  const h = host ?? currentHostname;
+  if (!activeSession || !h) return;
   copyUItoSession(activeSession);
-  await send({ type: 'SAVE_SESSION', tabId: currentTabId, session: activeSession });
+  await send({ type: 'SAVE_SESSION', hostname: h, session: activeSession });
 }
 
 async function readAndSaveNoUpdate(): Promise<void> {
@@ -148,7 +149,7 @@ async function readAndSaveNoUpdate(): Promise<void> {
   activeSession.pageText = pageText;
   activeSession.pageStructure = pageStructureStr;
   if (ok) {
-    await send({ type: 'SAVE_SESSION', tabId: currentTabId!, session: activeSession });
+    await send({ type: 'SAVE_SESSION', hostname: currentHostname, session: activeSession });
   }
 }
 
@@ -166,9 +167,9 @@ function updateTabIdDisplay(): void {
 // --- Session actions ---
 
 async function switchToSession(sessionId: string): Promise<void> {
-  if (!currentTabId) return;
+  if (!currentHostname) return;
   await saveCurrentSessionToBg();
-  const res = await send({ type: 'SWITCH_SESSION', tabId: currentTabId, sessionId });
+  const res = await send({ type: 'SWITCH_SESSION', hostname: currentHostname, sessionId });
   if (res.ok && res.sessions) {
     sessionsData = res.sessions as TabSessionData;
     syncActiveSession();
@@ -179,9 +180,9 @@ async function switchToSession(sessionId: string): Promise<void> {
 }
 
 async function createNewSession(): Promise<void> {
-  if (!currentTabId) return;
+  if (!currentHostname) return;
   await saveCurrentSessionToBg();
-  const res = await send({ type: 'CREATE_SESSION', tabId: currentTabId });
+  const res = await send({ type: 'CREATE_SESSION', hostname: currentHostname });
   if (res.ok && res.sessions) {
     sessionsData = res.sessions as TabSessionData;
     syncActiveSession();
@@ -195,10 +196,10 @@ async function createNewSession(): Promise<void> {
 }
 
 async function deleteCurrentSession(): Promise<void> {
-  if (!activeSession || !currentTabId) return;
+  if (!activeSession || !currentHostname) return;
   const total = sessionsData.sessions.length;
   if (total <= 1) return;
-  const res = await send({ type: 'DELETE_SESSION', tabId: currentTabId, sessionId: activeSession.id });
+  const res = await send({ type: 'DELETE_SESSION', hostname: currentHostname, sessionId: activeSession.id });
   if (res.ok && res.sessions) {
     sessionsData = res.sessions as TabSessionData;
     syncActiveSession();
@@ -209,8 +210,8 @@ async function deleteCurrentSession(): Promise<void> {
 }
 
 async function renameSession(sessionId: string, label: string): Promise<void> {
-  if (!currentTabId) return;
-  await send({ type: 'RENAME_SESSION', tabId: currentTabId, sessionId, label });
+  if (!currentHostname) return;
+  await send({ type: 'RENAME_SESSION', hostname: currentHostname, sessionId, label });
   await getSessionsData();
   renderSessionBar();
 }
@@ -422,7 +423,7 @@ async function handleSend(): Promise<void> {
 
   learnFromPrompt(text, currentHostname);
 
-  if (!activeSession || !currentTabId) return;
+  if (!activeSession || !currentHostname) return;
 
   const prevMessages = activeSession.messages ?? [];
 
@@ -453,7 +454,7 @@ async function handleSend(): Promise<void> {
   sendBtn.disabled = false;
   if (activeSession) {
     copyUItoSession(activeSession);
-    await send({ type: 'SAVE_SESSION', tabId: currentTabId!, session: activeSession });
+    await send({ type: 'SAVE_SESSION', hostname: currentHostname, session: activeSession });
   }
 }
 
@@ -461,31 +462,32 @@ async function handleSend(): Promise<void> {
 
 chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {
   if (msg.type !== 'tabChanged') return;
-  const url = msg.url as string | undefined;
-  if (url) {
-    try { setCurrentHostname(new URL(url).hostname); } catch { /* ignore */ }
-  }
   if (!ready) return;
 
   const newTabId = msg.tabId as number;
   const urlChanged = msg.urlChanged as boolean;
+  const url = msg.url as string | undefined;
+  const newHost = url ? urlHostname(url) : '';
 
-  // Same tab, URL changed — reread page but DON'T delete session
+  // Same tab, URL changed — reread page, sessions stay
   if (urlChanged && newTabId === currentTabId) {
+    setCurrentHostname(newHost);
     suggestionsEl.classList.remove('hidden');
     readAndSave();
     return;
   }
 
-  // Different tab — save old, load new
+  // Different tab — save old session under old hostname, then switch
   if (newTabId === currentTabId) return;
 
-  saveCurrentSessionToBg().then(() => {
+  const oldHostname = currentHostname;
+  saveCurrentSessionToBg(oldHostname).then(() => {
     setCurrentTabId(newTabId);
+    setCurrentHostname(newHost);
     updateTabIdDisplay();
     getSessionsData().then(() => {
       if (activeSession) {
-        suggestionsEl.classList.toggle('hidden', activeSession.messages?.length > 0);
+        suggestionsEl.classList.toggle('hidden', (activeSession.messages?.length ?? 0) > 0);
         loadSessionToUI(activeSession);
         renderSessionBar();
       }
@@ -495,6 +497,10 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {
     });
   });
 });
+
+function urlHostname(url: string): string {
+  try { return new URL(url).hostname; } catch { return ''; }
+}
 
 // --- Event listeners ---
 
@@ -587,7 +593,7 @@ async function init(): Promise<void> {
   await getSessionsData();
 
   if (activeSession) {
-    suggestionsEl.classList.toggle('hidden', activeSession.messages?.length > 0);
+    suggestionsEl.classList.toggle('hidden', (activeSession.messages?.length ?? 0) > 0);
     loadSessionToUI(activeSession);
     renderSessionBar();
   }

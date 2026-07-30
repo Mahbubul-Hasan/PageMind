@@ -56,23 +56,25 @@ async function sendToTabWithInject(
   }
 }
 
-// --- Session store ---
+// --- Session store (domain-keyed, persisted in local) ---
 
-function sessionsKey(): string {
-  return STORAGE_KEYS.SESSIONS;
+function hostKey(hostname: string): string {
+  return hostname || '__default__';
 }
 
-async function getTabData(tabId: number): Promise<TabSessionData> {
-  const data = await chrome.storage.session.get(sessionsKey());
-  const all = (data[sessionsKey()] ?? {}) as Record<string, TabSessionData>;
-  return all[tabId] ?? { activeIdx: 0, sessions: [] };
+async function getDomainData(hostname: string): Promise<TabSessionData> {
+  const key = hostKey(hostname);
+  const data = await chrome.storage.local.get(STORAGE_KEYS.SESSIONS);
+  const all = (data[STORAGE_KEYS.SESSIONS] ?? {}) as Record<string, TabSessionData>;
+  return all[key] ?? { activeIdx: 0, sessions: [] };
 }
 
-async function setTabData(tabId: number, d: TabSessionData): Promise<void> {
-  const data = await chrome.storage.session.get(sessionsKey());
-  const all = (data[sessionsKey()] ?? {}) as Record<string, TabSessionData>;
-  all[tabId] = d;
-  await chrome.storage.session.set({ [sessionsKey()]: all });
+async function setDomainData(hostname: string, d: TabSessionData): Promise<void> {
+  const key = hostKey(hostname);
+  const data = await chrome.storage.local.get(STORAGE_KEYS.SESSIONS);
+  const all = (data[STORAGE_KEYS.SESSIONS] ?? {}) as Record<string, TabSessionData>;
+  all[key] = d;
+  await chrome.storage.local.set({ [STORAGE_KEYS.SESSIONS]: all });
 }
 
 function makeSession(messages?: TabSession['messages']): TabSession {
@@ -87,12 +89,12 @@ function makeSession(messages?: TabSession['messages']): TabSession {
   };
 }
 
-async function handleSessions(tabId: number): Promise<TabSessionData> {
-  const d = await getTabData(tabId);
+async function ensureSessions(hostname: string): Promise<TabSessionData> {
+  const d = await getDomainData(hostname);
   if (d.sessions.length === 0) {
     d.sessions = [makeSession()];
     d.activeIdx = 0;
-    await setTabData(tabId, d);
+    await setDomainData(hostname, d);
   }
   return d;
 }
@@ -165,44 +167,44 @@ async function handleMessage(msg: BackgroundRequest): Promise<Record<string, unk
     case 'BACKEND_FETCH':
       return backendFetch(msg.url, msg.options);
     case 'GET_SESSIONS':
-      return { sessions: await handleSessions(msg.tabId) };
+      return { sessions: await ensureSessions(msg.hostname) };
     case 'SAVE_SESSION': {
-      const d = await getTabData(msg.tabId);
+      const d = await getDomainData(msg.hostname);
       const idx = d.sessions.findIndex((s) => s.id === msg.session.id);
       if (idx >= 0) d.sessions[idx] = msg.session;
-      await setTabData(msg.tabId, d);
+      await setDomainData(msg.hostname, d);
       return { ok: true };
     }
     case 'CREATE_SESSION': {
-      const d = await getTabData(msg.tabId);
+      const d = await getDomainData(msg.hostname);
       d.sessions.push(makeSession());
       d.activeIdx = d.sessions.length - 1;
-      await setTabData(msg.tabId, d);
+      await setDomainData(msg.hostname, d);
       return { sessions: d };
     }
     case 'DELETE_SESSION': {
-      const d = await getTabData(msg.tabId);
+      const d = await getDomainData(msg.hostname);
       const idx = d.sessions.findIndex((s) => s.id === msg.sessionId);
       if (idx >= 0) {
         d.sessions.splice(idx, 1);
         if (d.sessions.length === 0) d.sessions.push(makeSession());
         if (d.activeIdx >= d.sessions.length) d.activeIdx = d.sessions.length - 1;
       }
-      await setTabData(msg.tabId, d);
+      await setDomainData(msg.hostname, d);
       return { sessions: d };
     }
     case 'RENAME_SESSION': {
-      const d = await getTabData(msg.tabId);
+      const d = await getDomainData(msg.hostname);
       const s = d.sessions.find((s) => s.id === msg.sessionId);
       if (s) s.label = msg.label.slice(0, 60);
-      await setTabData(msg.tabId, d);
+      await setDomainData(msg.hostname, d);
       return { ok: true };
     }
     case 'SWITCH_SESSION': {
-      const d = await getTabData(msg.tabId);
+      const d = await getDomainData(msg.hostname);
       const idx = d.sessions.findIndex((s) => s.id === msg.sessionId);
       if (idx >= 0) d.activeIdx = idx;
-      await setTabData(msg.tabId, d);
+      await setDomainData(msg.hostname, d);
       return { sessions: d };
     }
     case 'GET_ACTIVE_TAB': {

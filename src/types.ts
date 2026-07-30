@@ -161,12 +161,12 @@ export type BackgroundRequest =
   | { type: 'GET_PAGE_STRUCTURE' }
   | { type: 'EXECUTE_ACTIONS'; actions: Action[] }
   | { type: 'BACKEND_FETCH'; url: string; options: Record<string, unknown> }
-  | { type: 'GET_SESSIONS'; tabId: number }
-  | { type: 'SAVE_SESSION'; tabId: number; session: TabSession }
-  | { type: 'CREATE_SESSION'; tabId: number }
-  | { type: 'DELETE_SESSION'; tabId: number; sessionId: string }
-  | { type: 'RENAME_SESSION'; tabId: number; sessionId: string; label: string }
-  | { type: 'SWITCH_SESSION'; tabId: number; sessionId: string }
+  | { type: 'GET_SESSIONS'; hostname: string }
+  | { type: 'SAVE_SESSION'; hostname: string; session: TabSession }
+  | { type: 'CREATE_SESSION'; hostname: string }
+  | { type: 'DELETE_SESSION'; hostname: string; sessionId: string }
+  | { type: 'RENAME_SESSION'; hostname: string; sessionId: string; label: string }
+  | { type: 'SWITCH_SESSION'; hostname: string; sessionId: string }
   | { type: 'GET_ACTIVE_TAB' };
 
 export type ContentRequest =
