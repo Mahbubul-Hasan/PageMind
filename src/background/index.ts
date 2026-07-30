@@ -58,22 +58,28 @@ function sendToTab(tabId: number, msg: Record<string, unknown>): Promise<Record<
   });
 }
 
-async function readActivePage(): Promise<{ text: string }> {
-  const tab = await getActiveTab();
-  const tabId = tab.id!;
+async function sendToTabWithInject(
+  tabId: number,
+  msg: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   try {
-    const msg = await sendToTab(tabId, { type: 'READ_PAGE' });
-    return { text: msg.text as string };
+    return await sendToTab(tabId, msg);
   } catch {
-    const result = await chrome.scripting.executeScript({
+    await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content.js'],
       world: 'ISOLATED',
     });
-    const text = result?.[0]?.result as string | undefined;
-    if (!text && text !== '') throw new Error('Could not read page content.');
-    return { text };
+    await new Promise((r) => setTimeout(r, 100));
+    return await sendToTab(tabId, msg);
   }
+}
+
+async function readActivePage(): Promise<{ text: string }> {
+  const tab = await getActiveTab();
+  const msg = await sendToTabWithInject(tab.id!, { type: 'READ_PAGE' });
+  if (!msg.text && msg.text !== '') throw new Error('Could not read page content.');
+  return { text: msg.text as string };
 }
 
 async function askAI(
@@ -127,7 +133,11 @@ async function handleMessage(msg: BackgroundRequest): Promise<Record<string, unk
     case 'ASK_AI':
       return askAI(msg.messages, msg.apiKey, msg.baseUrl, msg.model);
     case 'WRITE_TO_PAGE':
-      return sendToTab((await getActiveTab()).id!, { type: 'WRITE_TO_PAGE', text: msg.text });
+      return sendToTabWithInject((await getActiveTab()).id!, { type: 'WRITE_TO_PAGE', text: msg.text });
+    case 'GET_PAGE_STRUCTURE':
+      return sendToTabWithInject((await getActiveTab()).id!, { type: 'GET_PAGE_STRUCTURE' });
+    case 'EXECUTE_ACTIONS':
+      return sendToTabWithInject((await getActiveTab()).id!, { type: 'EXECUTE_ACTIONS', actions: msg.actions });
     case 'BACKEND_FETCH':
       return backendFetch(msg.url, msg.options);
     case 'GET_SESSION':

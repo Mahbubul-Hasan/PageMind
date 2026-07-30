@@ -382,6 +382,44 @@ body {
   30% { transform: translateY(-8px); opacity: 1; }
 }
 
+/* ---- Action Steps ---- */
+
+.action-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.action-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+  font-family: monospace;
+}
+
+.action-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.action-label {
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-error {
+  color: #f87171;
+  font-size: 11px;
+  margin-left: 8px;
+}
+
 /* ---- Suggestions ---- */
 
 .suggestions {

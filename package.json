@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
-    "build": "tsc --noEmit && vite build && cp dist/* . 2>/dev/null; true",
+    "build:content": "vite build --config vite.content.config.ts",
+    "build": "tsc --noEmit && vite build && npm run build:content && cp dist/* . 2>/dev/null; true",
     "lint": "eslint src/",
     "format": "prettier --write src/"
   },

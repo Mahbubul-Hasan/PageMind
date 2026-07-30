@@ -1,10 +1,11 @@
 import '../styles/sidepanel.css';
-import type { ChatMessage, BackgroundResponse, Session } from '../types';
+import type { ChatMessage, BackgroundResponse, Session, PageStructure, ActionResult } from '../types';
 import { CONSTANTS } from '../types';
 import { pageText, currentTabId, currentHostname, ready, setPageText, setCurrentTabId, setCurrentHostname, setReady } from './state';
 import { getProfile, learnFromPage, learnFromPrompt, buildProfileContext } from './profile';
 import { loadSettings, openSettings, closeSettings, renderProfileEditor, saveSettings, handleClearProfile, getBackendUrl, isBackendEnabled } from './settings';
-import { serializeMessages, getIndicatorState, applyIndicatorState, addMessage, removeLoading, showLoading, renderMessages } from './chat';
+import { serializeMessages, getIndicatorState, applyIndicatorState, addMessage, removeLoading, showLoading, renderMessages, addActionStep, updateActionStep } from './chat';
+import { parseActions, formatStructure } from './actions-util';
 
 // --- DOM refs ---
 const $ = (id: string) => document.getElementById(id)!;
@@ -34,6 +35,8 @@ const profileNameEl = $('profileName') as HTMLInputElement;
 const profileStatsEl = $('profileStats') as HTMLElement;
 const suggestionsEl = $('suggestions') as HTMLElement;
 
+let pageStructureStr = '';
+
 // --- Messaging ---
 
 function send(msg: Record<string, unknown>): Promise<BackgroundResponse> {
@@ -45,6 +48,30 @@ function send(msg: Record<string, unknown>): Promise<BackgroundResponse> {
   });
 }
 
+// --- Page structure ---
+
+async function getPageStructure(): Promise<PageStructure | null> {
+  const res = await send({ type: 'GET_PAGE_STRUCTURE' });
+  if (!res.ok || !res.structure) {
+    pageDot.className = 'page-dot error';
+    pageIndicator.textContent = res.error ?? 'Failed to read page';
+    return null;
+  }
+  const s = res.structure as PageStructure;
+  pageDot.className = 'page-dot loaded';
+  pageIndicator.textContent = `${s.interactive.length} elements, ${s.visibleText.length} chars`;
+  return s;
+}
+
+async function updatePageContext(): Promise<boolean> {
+  const structure = await getPageStructure();
+  if (!structure) return false;
+  pageStructureStr = formatStructure(structure);
+  setPageText(structure.visibleText || '');
+  learnFromPage(pageText, currentHostname);
+  return true;
+}
+
 // --- Session ---
 
 async function saveSession(): Promise<void> {
@@ -54,6 +81,7 @@ async function saveSession(): Promise<void> {
     tabId: currentTabId,
     session: {
       pageText,
+      pageStructure: pageStructureStr,
       messages: serializeMessages(messagesEl),
       indicator: getIndicatorState(pageDot, pageIndicator),
     } as Session,
@@ -66,6 +94,7 @@ async function loadSession(): Promise<boolean> {
   const s = res.session as Session | undefined;
   if (!s) return false;
   setPageText(s.pageText || '');
+  pageStructureStr = s.pageStructure || '';
   renderMessages(messagesEl, s.messages);
   if (s.indicator) applyIndicatorState(pageDot, pageIndicator, s.indicator);
   if (messagesEl.children.length > 1) {
@@ -81,27 +110,8 @@ function updateTabIdDisplay(): void {
 async function readAndSave(): Promise<void> {
   pageDot.className = 'page-dot';
   pageIndicator.textContent = 'Reading...';
-  await readPage();
+  await updatePageContext();
   await saveSession();
-}
-
-// --- Read page ---
-
-async function readPage(): Promise<string | null> {
-  const res = await send({ type: 'READ_PAGE' });
-  if (!res.ok) {
-    pageDot.className = 'page-dot error';
-    pageIndicator.textContent = res.error ?? 'Failed';
-    return null;
-  }
-  const text = (res.text as string) ?? '';
-  setPageText(text);
-  pageDot.className = 'page-dot loaded';
-  pageIndicator.textContent = `${text.length} chars`;
-
-  learnFromPage(text, currentHostname);
-
-  return text;
 }
 
 // --- Build AI context ---
@@ -113,7 +123,45 @@ async function buildChatMessages(
   const profile = await getProfile();
   const profileCtx = buildProfileContext(profile, currentHostname);
 
-  const systemContent = `You are a helpful assistant. Answer the user's question based on the page content below.${profileCtx}\n\nPAGE CONTENT:\n${pageText || '(none)'}`;
+  const systemContent = `You are a browser assistant with page awareness.${profileCtx}
+
+PAGE STRUCTURE:
+${pageStructureStr || '(no page loaded)'}
+
+You can take actions on the page by including commands in your response.
+Available commands:
+TYPE "text" INTO "element label"  — Type into a field (use exact label from structure)
+CLICK "button/link text"          — Click a button or link
+SELECT "option" FROM "select label" — Choose a dropdown option
+SCROLL DOWN / SCROLL UP           — Scroll the page
+WAIT 2000                         — Wait milliseconds
+READ PAGE                         — Re-read the page structure
+DONE                              — All done, show summary
+
+Example:
+User: Fill in the email field with test@example.com
+Assistant: Typing into the email field.
+TYPE "test@example.com" INTO "Email"
+
+User: Click the submit button
+Assistant:
+CLICK "Submit"
+WAIT 1000
+DONE
+Done! I clicked Submit.
+
+User: Go to the Actions tab
+Assistant:
+CLICK "Actions"
+DONE
+Navigated to the Actions tab.
+
+Rules:
+- Put each command on its own line
+- Use the exact element labels shown in the structure (by index or label text)
+- For forms, send multiple TYPE commands together
+- Respond naturally AND include commands when actions are needed
+- When finished, write DONE then your summary`;
 
   const history = (prevMessages ?? [])
     .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -137,34 +185,100 @@ async function buildChatMessages(
   ];
 }
 
-// --- AI calls ---
+// --- Action loop ---
 
-async function handleSendDirect(context: ChatMessage[]): Promise<void> {
+async function executeActionLoop(context: ChatMessage[]): Promise<void> {
+  let currentContext = context;
+  let done = false;
+  let loopCount = 0;
+  const maxLoops = 10;
+
+  while (!done && loopCount < maxLoops) {
+    loopCount++;
+
+    // Call AI
+    const res = await callAI(currentContext);
+    if (!res.ok) {
+      addMessage(messagesEl, 'error', res.error ?? 'Request failed');
+      return;
+    }
+
+    const aiText = (res.text as string) ?? '';
+    const actions = parseActions(aiText);
+    const hasActions = actions.length > 0 && !(actions.length === 1 && actions[0].command === 'DONE');
+
+    // Show AI response
+    const cleanText = aiText.replace(/^(TYPE|CLICK|SELECT|SCROLL|WAIT|READ|DONE).*/gm, '').trim();
+    if (cleanText) {
+      addMessage(messagesEl, 'assistant', cleanText);
+    }
+
+    if (!hasActions) {
+      done = true;
+      continue;
+    }
+
+    // Execute actions
+    for (const action of actions) {
+      if (action.command === 'DONE') {
+        done = true;
+        break;
+      }
+
+      if (action.command === 'READ') {
+        await updatePageContext();
+        const readMsg: ChatMessage = { role: 'system', content: '[Page re-read after action]' };
+        currentContext = [...currentContext, { role: 'assistant', content: aiText }, readMsg];
+        continue;
+      }
+
+      const stepEl = addActionStep(messagesEl, action);
+      const execRes = await send({ type: 'EXECUTE_ACTIONS', actions: [action] });
+      const results = (execRes.results as ActionResult[]) ?? [];
+      const result = results[0] ?? { command: action.command, success: false, error: 'No result' };
+      updateActionStep(stepEl, result);
+
+      // If READ was requested after WAIT/CLICK
+      if (result.success && (action.command === 'CLICK' || action.command === 'SELECT')) {
+        await new Promise((r) => setTimeout(r, 500));
+        await updatePageContext();
+      }
+    }
+
+    // Build next context with updated page
+    currentContext = await buildChatMessages(
+      'Continue with the task based on the current page state.',
+      serializeMessages(messagesEl),
+    );
+  }
+
+  if (loopCount >= maxLoops) {
+    addMessage(messagesEl, 'error', 'Reached maximum action steps. Task may be incomplete.');
+  }
+}
+
+async function callAI(context: ChatMessage[]): Promise<BackgroundResponse> {
+  if (isBackendEnabled()) {
+    try {
+      const url = `${getBackendUrl().replace(/\/$/, '')}/api/proxy/chat`;
+      return await send({
+        type: 'BACKEND_FETCH',
+        url,
+        options: { method: 'POST', body: JSON.stringify({ messages: context }) },
+      });
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   const s = await chrome.storage.local.get(['apiKey', 'baseUrl', 'model']);
-  const res = await send({
+  return await send({
     type: 'ASK_AI',
     messages: context,
     apiKey: s.apiKey ?? '',
     baseUrl: s.baseUrl ?? '',
     model: s.model ?? '',
   });
-  if (!res.ok) addMessage(messagesEl, 'error', res.error ?? 'Request failed');
-  else addMessage(messagesEl, 'assistant', res.text as string, res.text as string);
-}
-
-async function handleSendBackend(context: ChatMessage[]): Promise<void> {
-  try {
-    const url = `${getBackendUrl().replace(/\/$/, '')}/api/proxy/chat`;
-    const res = await send({
-      type: 'BACKEND_FETCH',
-      url,
-      options: { method: 'POST', body: JSON.stringify({ messages: context }) },
-    });
-    if (!res.ok) throw new Error(res.error ?? 'Backend error');
-    addMessage(messagesEl, 'assistant', res.text as string, res.text as string);
-  } catch (e) {
-    addMessage(messagesEl, 'error', (e as Error).message);
-  }
 }
 
 // --- Send handler ---
@@ -188,9 +302,13 @@ async function handleSend(): Promise<void> {
   const res = await send({ type: 'GET_SESSION', tabId: currentTabId } as Record<string, unknown>);
   const prevMessages = ((res.session as Session)?.messages ?? []) as ChatMessage[];
 
-  if (!pageText) {
+  if (!pageStructureStr) {
     addMessage(messagesEl, 'system', 'Reading page...');
-    await readPage();
+    const ok = await updatePageContext();
+    if (!ok) {
+      addMessage(messagesEl, 'error', 'Could not read page. Make sure you are on a web page.');
+      return;
+    }
   }
 
   inputEl.value = '';
@@ -200,14 +318,8 @@ async function handleSend(): Promise<void> {
   addMessage(messagesEl, 'user', text);
   showLoading(messagesEl);
 
-  if (!pageText) setPageText('');
   const context = await buildChatMessages(text, prevMessages);
-
-  if (isBackendEnabled()) {
-    await handleSendBackend(context);
-  } else {
-    await handleSendDirect(context);
-  }
+  await executeActionLoop(context);
 
   removeLoading(messagesEl);
   sendBtn.disabled = false;
@@ -228,6 +340,7 @@ chrome.runtime.onMessage.addListener((msg: Record<string, unknown>) => {
     send({ type: 'DELETE_SESSION', tabId: currentTabId });
     messagesEl.innerHTML = '';
     setPageText('');
+    pageStructureStr = '';
     updateTabIdDisplay();
     suggestionsEl.classList.remove('hidden');
     readAndSave();
@@ -297,7 +410,7 @@ async function init(): Promise<void> {
   if (!found) {
     await readAndSave();
   } else {
-    learnFromPage(pageText, currentHostname);
+    if (pageText) learnFromPage(pageText, currentHostname);
   }
   setReady(true);
 }

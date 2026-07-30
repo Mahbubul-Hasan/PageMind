@@ -1,18 +1,18 @@
-import type { ChatMessage, IndicatorState } from '../types';
+import type { ChatMessage, IndicatorState, Action, ActionResult } from '../types';
 
 export function serializeMessages(container: HTMLElement): ChatMessage[] {
   return Array.from(container.children)
     .filter((el) => !el.classList.contains('loading') && !el.classList.contains('welcome'))
-    .map((el) => ({
-      role: el.classList.contains('user')
-        ? 'user'
-        : el.classList.contains('assistant')
-          ? 'assistant'
-          : el.classList.contains('error')
-            ? 'error'
-            : 'system',
-      content: el.textContent ?? '',
-    }));
+    .map((el) => {
+      const role =
+        el.classList.contains('user') ? 'user' :
+        el.classList.contains('assistant') ? 'assistant' :
+        el.classList.contains('error') ? 'error' :
+        el.classList.contains('action-step') ? 'action' :
+        'system';
+      const stepLabel = el.querySelector('.action-label');
+      return { role, content: stepLabel?.textContent ?? el.textContent ?? '' };
+    });
 }
 
 export function getIndicatorState(
@@ -91,6 +91,63 @@ export function showLoading(container: HTMLElement): void {
   el.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
   container.appendChild(el);
   container.scrollTop = container.scrollHeight;
+}
+
+export function addActionStep(
+  container: HTMLElement,
+  action: Action,
+  result?: ActionResult,
+): HTMLElement {
+  const wel = container.querySelector('.welcome');
+  if (wel) wel.remove();
+
+  let stepsEl = container.querySelector('.action-steps:last-child') as HTMLElement | null;
+  if (!stepsEl) {
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message assistant';
+    stepsEl = document.createElement('div');
+    stepsEl.className = 'action-steps';
+    msgEl.appendChild(stepsEl);
+    container.appendChild(msgEl);
+  }
+
+  const step = document.createElement('div');
+  step.className = 'action-step';
+
+  const icon = document.createElement('span');
+  icon.className = 'action-icon';
+  icon.textContent = result ? (result.success ? '\u2713' : '\u2717') : '\u23F3';
+  step.appendChild(icon);
+
+  const label = document.createElement('span');
+  label.className = 'action-label';
+  label.textContent = action.raw;
+  step.appendChild(label);
+
+  if (result && !result.success && result.error) {
+    const err = document.createElement('span');
+    err.className = 'action-error';
+    err.textContent = result.error;
+    step.appendChild(err);
+  }
+
+  stepsEl.appendChild(step);
+  container.scrollTop = container.scrollHeight;
+  return step;
+}
+
+export function updateActionStep(
+  stepEl: HTMLElement,
+  result: ActionResult,
+): void {
+  const icon = stepEl.querySelector('.action-icon')!;
+  icon.textContent = result.success ? '\u2713' : '\u2717';
+  if (!result.success && result.error) {
+    const err = document.createElement('span');
+    err.className = 'action-error';
+    err.textContent = result.error;
+    stepEl.appendChild(err);
+  }
 }
 
 export function renderMessages(

@@ -1,4 +1,6 @@
-import type { SidepanelRequest } from '../types';
+import type { ContentRequest, PageStructure, Action, ActionResult } from '../types';
+import { scanPage } from './scanner';
+import { executeActions } from './actions';
 
 const PAGE_TEXT_LIMIT = 30000;
 
@@ -83,8 +85,18 @@ function writeToPage(text: string): void {
   }
 }
 
+function handleGetPageStructure(): { structure: PageStructure } {
+  const structure = scanPage();
+  return { structure };
+}
+
+async function handleExecuteActions(actions: Action[]): Promise<{ results: ActionResult[] }> {
+  const results = await executeActions(actions);
+  return { results };
+}
+
 chrome.runtime.onMessage.addListener(
-  (msg: SidepanelRequest, _sender: chrome.runtime.MessageSender, sendResponse: (r: Record<string, unknown>) => void) => {
+  (msg: ContentRequest, _sender: chrome.runtime.MessageSender, sendResponse: (r: Record<string, unknown>) => void) => {
     if (msg.type === 'READ_PAGE') {
       sendResponse({ ok: true, text: readPage() });
     } else if (msg.type === 'WRITE_TO_PAGE') {
@@ -94,6 +106,14 @@ chrome.runtime.onMessage.addListener(
       } catch (e) {
         sendResponse({ ok: false, error: (e as Error).message });
       }
+    } else if (msg.type === 'GET_PAGE_STRUCTURE') {
+      const result = handleGetPageStructure();
+      sendResponse({ ok: true, ...result });
+    } else if (msg.type === 'EXECUTE_ACTIONS') {
+      handleExecuteActions(msg.actions).then((result) => {
+        sendResponse({ ok: true, ...result });
+      });
+      return true;
     }
     return true;
   },
